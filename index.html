@@ -10,7 +10,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
-    <script>window.TP_PAGE = 'user';</script>
+    <script>window.TP_PAGE = 'user'; window.tpNow = function () { return (typeof window.tpServerNow === 'function') ? window.tpServerNow() : Date.now(); };</script>
     <script>
 /* ===================================================================
    TP FIREBASE SYNC LAYER  (shared by user page + admin page)
@@ -100,7 +100,7 @@
             // A ma password sahi cha, B ma admin account chaina => B ma same email/password le auto-banaune (admin email matra)
             try {
               var cc = await SH[sid].auth.createUserWithEmailAndPassword(email, pw);
-              try { await SH[sid].db.ref('users/' + cc.user.uid).set({ fullName: 'Admin', email: String(email).trim().toLowerCase(), isAdmin: true, createdAt: new Date().toISOString() }); }
+              try { await SH[sid].db.ref('users/' + cc.user.uid).set({ fullName: 'Admin', email: String(email).trim().toLowerCase(), isAdmin: true, createdAt: new Date(window.tpNow()).toISOString() }); }
               catch (e3) { S.shErr[sid] = 'users/isAdmin save fail: ' + ((e3 && (e3.code || e3.message)) || e3); }
               toast('Shard ' + sid + ' ma admin account auto-banayo.');
             } catch (e2) {
@@ -142,6 +142,30 @@
   }
   var auth = mk('auth'), db = mk('db');
   var SV = firebase.database.ServerValue;
+  // ---------- SERVER CLOCK (device ko date/time change garera bonus/spin repeat garna nadine) ----------
+  var CLK = { off: 0, ok: false };
+  SHARD_IDS.forEach(function (id) {
+    try { SH[id].db.ref('.info/serverTimeOffset').on('value', function (sn) { var v = sn.val(); if (typeof v === 'number') { CLK.off = v; CLK.ok = true; } }); } catch (e) {}
+  });
+  window.tpServerNow = function () { return Date.now() + CLK.off; };
+  window.tpClockReady = function () { return CLK.ok; };
+  // ---------- SERVER TRANSACTION on own user record ----------
+  // Balance/bonus/spin jasta kura Firebase ko ASLI (server) data ma re-check garera atomic update huncha.
+  // fn(rawRecord, serverNow, info) => true (commit) | false (abort).  Stale/local data le kahile balance override gardaina.
+  // ONE-TIME GATE: approve/close jasta paisa chalne kaam server ma ek choti matra (double-click / 2 tab / admin+poster double credit rokchha)
+  function gateRef(lsKey, id, tag, e) { var cfg = COLS[lsKey], k = idStr(id); return dbOf(lsKey, k, e).ref(cfg.col).child(k).child('g_' + tag); }
+  window.tpGate = function (lsKey, id, tag, e) {
+    return gateRef(lsKey, id, tag, e).transaction(function (cur) { return cur === null ? window.tpServerNow() : undefined; }, undefined, false).then(function (r) { return !!r.committed; });
+  };
+  window.tpGateRelease = function (lsKey, id, tag, e) { try { return gateRef(lsKey, id, tag, e).remove().catch(function () {}); } catch (x) {} };
+  window.tpUserTx = function (uid, fn) {
+    var ref = SH[ACT].db.ref('app_users').child(idStr(uid)), info = {};
+    return ref.transaction(function (cur) {
+      if (cur === null) return cur;            // local cache khali: Firebase le server ko real value ma retry garcha
+      var r = Object.assign({}, cur); info = {};
+      return fn(r, window.tpServerNow(), info) === true ? r : undefined;
+    }, undefined, false).then(function (res) { return { committed: !!res.committed, info: info }; });
+  };
   function liveShards() { return PAGE === 'admin' ? SHARD_IDS.filter(function (id) { return SH[id].auth.currentUser; }) : [ACT]; }
   function route(lsKey, id, e) {
     if (PAGE !== 'admin') return [ACT];
@@ -396,7 +420,7 @@
         } else upd[k] = encVal(e[k]);
         any = true;
       });
-      Object.keys(prev).forEach(function (k) { if (!(k in e)) { upd[k] = null; any = true; } });
+      Object.keys(prev).forEach(function (k) { if (!(k in e) && k.indexOf('g_') !== 0) { upd[k] = null; any = true; } });
       if (!any) return;
       var nb = Object.assign({}, prev, e); Object.keys(prev).forEach(function (k) { if (!(k in e)) delete nb[k]; });
       base.set(id, nb);
@@ -686,7 +710,7 @@
     if (found && !found.firebaseUid) { found.firebaseUid = fu.uid; await col.child(idStr(found.uid)).update({ firebaseUid: fu.uid }); }
     if (!found) {
       var all = S.remote.tp_users ? Array.from(S.remote.tp_users.values()) : [];
-      found = Object.assign({ name: email, balance: 0, totalEarned: 0, status: 'Active', isAdmin: false, referredBy: null, referralCount: 0, referralEarnings: 0, firstApprovalRewarded: false, checkInStreak: 0, lastCheckIn: null, lastSpin: null, joinedAt: new Date().toISOString() }, extra || {}, { uid: newUid(all), firebaseUid: fu.uid, email: email });
+      found = Object.assign({ name: email, balance: 0, totalEarned: 0, status: 'Active', isAdmin: false, referredBy: null, referralCount: 0, referralEarnings: 0, firstApprovalRewarded: false, checkInStreak: 0, lastCheckIn: null, lastSpin: null, joinedAt: new Date(window.tpNow()).toISOString() }, extra || {}, { uid: newUid(all), firebaseUid: fu.uid, email: email });
       await track(col.child(idStr(found.uid)).set(enc(clean(COLS.tp_users, found))));
     }
     (S.remote.tp_users || (S.remote.tp_users = new Map())).set(idStr(found.uid), clean(COLS.tp_users, found));
@@ -928,6 +952,12 @@
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .bg-slate-900\/60 .text-white:not([class*="bg-"]){color:#1e1b4b}
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .bg-slate-700\/50 .text-white:not([class*="bg-"]){color:#1e1b4b}
         #notif-panel h4{color:#1e1b4b}
+        /* Notification list: bright readable text on the dark panel */
+        #notif-panel #notif-list .text-slate-200{color:#f8fafc}
+        #notif-panel #notif-list .text-slate-500{color:#a5f3fc}
+        #notif-panel #notif-list > div{border-color:rgba(255,255,255,.14)}
+        #notif-panel #notif-list > div:hover{background-color:rgba(255,255,255,.08)}
+        #notif-panel #notif-list > div.bg-indigo-500\/10{background-color:rgba(129,140,248,.18)}
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .from-slate-900.bg-gradient-to-r{background-image:linear-gradient(to right,#fff,transparent)}
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .from-slate-900.bg-gradient-to-l{background-image:linear-gradient(to left,#fff,transparent)}
         #app-view #announcement-bar{background:#fff1e0;border-color:#fdba74;color:#9a3412}
@@ -1910,12 +1940,37 @@
 
         function getSettings() { return JSON.parse(localStorage.getItem('tp_settings')); }
 
-        function todayStr() { return new Date().toDateString(); }
-        function yesterdayStr() {
-            const d = new Date();
-            d.setDate(d.getDate() - 1);
-            return d.toDateString();
+        // Date ahile Firebase SERVER time bata, Nepal time (UTC+5:45) anusar. Device ko date change garda kehi farak pardaina.
+        const _DN = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], _MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const NPT_OFFSET_MS = (5 * 60 + 45) * 60000;
+        function nptStr(ts, offsetDays) {
+            const d = new Date(ts + NPT_OFFSET_MS + (offsetDays || 0) * 86400000);
+            return _DN[d.getUTCDay()] + ' ' + _MN[d.getUTCMonth()] + ' ' + String(d.getUTCDate()).padStart(2, '0') + ' ' + d.getUTCFullYear();
         }
+        function todayStr() { return nptStr(window.tpNow(), 0); }
+        function yesterdayStr() { return nptStr(window.tpNow(), -1); }
+        function dayNum(str) {
+            const m = /^\w{3} (\w{3}) (\d{1,2}) (\d{4})$/.exec(String(str || '').trim());
+            if (!m) return NaN;
+            const mi = _MN.indexOf(m[1]); if (mi < 0) return NaN;
+            return Math.floor(Date.UTC(+m[3], mi, +m[2]) / 86400000);
+        }
+        // true = aaja claim gareko ya last claim aajako bhanda pachhi ko date (fake date) ho
+        function alreadyClaimed(last, today) {
+            if (!last) return false;
+            today = today || todayStr();
+            const l = dayNum(last), t = dayNum(today);
+            if (isNaN(l)) return String(last) === today;
+            return l >= t;
+        }
+        function clockOk() {
+            if (typeof window.tpClockReady === 'function' && !window.tpClockReady()) { showToast('Server time load hudai cha, 2-3 second pachhi feri try garnus.'); return false; }
+            if (typeof window.tpUserTx !== 'function') { showToast('Server connect bhayena. Page refresh garnus.'); return false; }
+            return true;
+        }
+        const _rnd = x => Math.round(x * 1e6) / 1e6;
+        // Server ma commit bhayepachhi listener le local update garcha; tyo pachhi UI fresh garne
+        function afterServerWrite() { [200, 900].forEach(ms => setTimeout(() => { try { syncFromStorage(true); } catch (e) {} }, ms)); }
 
         function switchView(view) {
             const landingView = document.getElementById('landing-view');
@@ -2082,7 +2137,7 @@
         // ---------- DAILY BONUS ----------
         function renderDailyBonusBtn(user) {
             const btn = document.getElementById('daily-bonus-btn');
-            if (user.lastCheckIn === todayStr()) {
+            if (alreadyClaimed(user.lastCheckIn)) {
                 btn.disabled = true;
                 btn.classList.add('opacity-50', 'cursor-not-allowed');
                 btn.innerHTML = '<i class="fa-solid fa-check"></i><span>Claimed Today</span>';
@@ -2093,38 +2148,36 @@
             }
         }
 
-        function claimDailyBonus() {
-            let user = freshActive();
+        async function claimDailyBonus() {
+            if (!clockOk()) return;
+            const user = freshActive();
             if (!user) return;
-            if (user.lastCheckIn === todayStr()) {
-                showToast('Aajako bonus pahile nai claim gareko cha!');
-                return;
-            }
-
-            const settings = getSettings();
-            user.checkInStreak = (user.lastCheckIn === yesterdayStr()) ? (user.checkInStreak || 0) + 1 : 1;
-
+            if (window.__bonusBusy) return;
+            window.__bonusBusy = true;
             // Daily bonus is fixed at Rs. 0.01 — hard-capped, never more.
             const DAILY_BONUS_CAP = 0.01;
-            let bonus = Math.min(settings.dailyBonus || DAILY_BONUS_CAP, DAILY_BONUS_CAP);
-
-            user.balance = (user.balance || 0) + bonus;
-            user.totalEarned = (user.totalEarned || 0) + bonus;
-            user.lastCheckIn = todayStr();
-
-            refreshActiveUserEverywhere(user);
-            document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
-            renderRankBadge(user);
-            renderStreak(user);
-            renderWithdrawProgress(user);
-            renderDailyBonusBtn(user);
-            showToast(`Daily bonus claimed: Rs. ${bonus.toFixed(2)}! 🔥 Streak: ${user.checkInStreak} days`);
+            const bonus = Math.min(getSettings().dailyBonus || DAILY_BONUS_CAP, DAILY_BONUS_CAP);
+            try {
+                const res = await window.tpUserTx(user.uid, (r, now, info) => {
+                    const today = nptStr(now, 0), yest = nptStr(now, -1);
+                    if (alreadyClaimed(r.lastCheckIn, today)) { info.already = true; return false; }
+                    r.checkInStreak = (r.lastCheckIn === yest) ? (Number(r.checkInStreak) || 0) + 1 : 1;
+                    r.balance = _rnd((Number(r.balance) || 0) + bonus);
+                    r.totalEarned = _rnd((Number(r.totalEarned) || 0) + bonus);
+                    r.lastCheckIn = today;
+                    info.streak = r.checkInStreak;
+                    return true;
+                });
+                if (!res.committed) { showToast(res.info.already ? 'Aajako bonus pahile nai claim gareko cha!' : 'Server ma save bhayena, feri try garnus.'); }
+                else { showToast(`Daily bonus claimed: Rs. ${bonus.toFixed(2)}! 🔥 Streak: ${res.info.streak} days`); }
+            } catch (e) { console.error(e); showToast('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error')); }
+            finally { window.__bonusBusy = false; afterServerWrite(); }
         }
 
         // ---------- SPIN WHEEL ----------
         function renderSpinBtn(user) {
             const btn = document.getElementById('spin-btn');
-            if (user.lastSpin === todayStr()) {
+            if (alreadyClaimed(user.lastSpin)) {
                 btn.disabled = true;
                 btn.classList.add('opacity-50', 'cursor-not-allowed');
                 btn.innerText = 'Come back tomorrow';
@@ -2135,41 +2188,47 @@
             }
         }
 
-        function spinNow() {
-            let user = freshActive();
+        async function spinNow() {
+            if (!clockOk()) return;
+            const user = freshActive();
             if (!user) return;
-            if (user.lastSpin === todayStr()) {
-                showToast('Aajako spin pahile nai use gareko cha!');
-                return;
+            if (window.__spinBusy) return;
+            window.__spinBusy = true;
+            const spinBtn = document.getElementById('spin-btn');
+            spinBtn.disabled = true;
+            // Reward is always between Rs. 0.01 (min) and Rs. 0.05 (max) — never more.
+            const MIN_SPIN_REWARD = 0.01, MAX_SPIN_REWARD = 0.05;
+            let reward = 0;
+            try {
+                // Pahile server ma aajako spin lock + reward credit (atomic). Tespachi matra wheel ghumchha.
+                const res = await window.tpUserTx(user.uid, (r, now, info) => {
+                    const today = nptStr(now, 0);
+                    if (alreadyClaimed(r.lastSpin, today)) { info.already = true; return false; }
+                    reward = parseFloat((Math.random() * (MAX_SPIN_REWARD - MIN_SPIN_REWARD) + MIN_SPIN_REWARD).toFixed(2));
+                    r.balance = _rnd((Number(r.balance) || 0) + reward);
+                    r.totalEarned = _rnd((Number(r.totalEarned) || 0) + reward);
+                    r.lastSpin = today;
+                    return true;
+                });
+                if (!res.committed) {
+                    showToast(res.info.already ? 'Aajako spin pahile nai use gareko cha!' : 'Server ma save bhayena, feri try garnus.');
+                    window.__spinBusy = false; afterServerWrite(); return;
+                }
+            } catch (e) {
+                console.error(e); showToast('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error'));
+                window.__spinBusy = false; afterServerWrite(); return;
             }
 
             const disc = document.getElementById('wheel-disc');
-            // Reward is always between Rs. 0.01 (min) and Rs. 0.05 (max) — never more.
-            const MIN_SPIN_REWARD = 0.01;
-            const MAX_SPIN_REWARD = 0.05;
-            const reward = parseFloat((Math.random() * (MAX_SPIN_REWARD - MIN_SPIN_REWARD) + MIN_SPIN_REWARD).toFixed(2));
-
-            const spins = 5; // full rotations for effect
             const randomOffset = Math.floor(Math.random() * 360);
             const currentRotation = (parseInt(disc.dataset.rotation) || 0);
-            const newRotation = currentRotation + (spins * 360) + randomOffset;
+            const newRotation = currentRotation + (5 * 360) + randomOffset;
             disc.style.transform = `rotate(${newRotation}deg)`;
             disc.dataset.rotation = newRotation;
 
-            document.getElementById('spin-btn').disabled = true;
-
             setTimeout(() => {
-                user.lastSpin = todayStr();
-                if (reward > 0) {
-                    user.balance = (user.balance || 0) + reward;
-                    user.totalEarned = (user.totalEarned || 0) + reward;
-                }
-                refreshActiveUserEverywhere(user);
-                document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
-                renderRankBadge(user);
-                renderWithdrawProgress(user);
-                renderSpinBtn(user);
-
+                window.__spinBusy = false;
+                afterServerWrite();
                 document.getElementById('spin-result-icon').innerText = reward > 0 ? '🎉' : '😅';
                 document.getElementById('spin-result-title').innerText = reward > 0 ? `You Won Rs. ${reward}!` : 'Better Luck Tomorrow';
                 document.getElementById('spin-result-desc').innerText = reward > 0 ? 'Bonus tapaiko balance ma thapiyo.' : 'Bholi feri spin garnus, aaja kehi paunubhayen.';
@@ -2377,7 +2436,24 @@
             box.innerHTML = h ? `<i class="fa-solid fa-circle-check text-emerald-400 mr-1"></i>Link thik cha — <a href="${esc(h)}" target="_blank" rel="noopener noreferrer" style="color:#6366f1;text-decoration:underline">${esc(linkInfo(h).name)} link test garnus</a>` : '<i class="fa-solid fa-triangle-exclamation text-amber-400 mr-1"></i>Link sahi chaina.';
         }
 
-        function closeMyTask(taskId) {
+        // ---- Server gate wrapper: paisa chalne kaam arko tab/admin le pahile gareko chha bhane rokcha ----
+        async function tpGuard(lsKey, id, tag, run, isDone) {
+            if (typeof window.tpGate !== 'function') { showToast('Server connect bhayena. Page refresh garnus.'); return; }
+            let ok = false;
+            try { ok = await window.tpGate(lsKey, id, tag); } catch (e) { showToast('Server ma lock bhayena: ' + ((e && (e.code || e.message)) || 'error')); return; }
+            if (!ok) { showToast('Yo kaam arko tab/admin le gardai cha ya pahile nai bhaisakyo (server check).'); try { syncFromStorage(true); } catch (e) {} return; }
+            let res;
+            try { res = run(); } catch (e) { window.tpGateRelease(lsKey, id, tag); throw e; }
+            let done = true; try { done = isDone ? !!isDone(res) : true; } catch (e) {}
+            if (!done) window.tpGateRelease(lsKey, id, tag);
+            return res;
+        }
+        const _lsFind = (k, f) => JSON.parse(localStorage.getItem(k) || '[]').find(f);
+
+        async function closeMyTask(taskId) {
+            return tpGuard('tp_tasks', taskId, 'money', () => _closeMyTaskImpl(taskId), () => { const x = _lsFind('tp_tasks', q => q.id === taskId); return !x || x.status !== 'Approved'; });
+        }
+        function _closeMyTaskImpl(taskId) {
             const _t = JSON.parse(localStorage.getItem('tp_tasks') || '[]').find(x => x.id === taskId);
             if (!_t) return;
             const _un = taskUnusedFund(_t, JSON.parse(localStorage.getItem('tp_submissions') || '[]'));
@@ -2433,7 +2509,12 @@
                 </tr>`).join('');
         }
 
-        function reviewAsPoster(subId, status) {
+        async function reviewAsPoster(subId, status) {
+            const _in = document.getElementById('poster-remark-' + subId);
+            if (status === 'Rejected' && !(_in && _in.value.trim())) { alert('Reject garda description (karan) lekhnu parcha!'); return; }
+            return tpGuard('tp_submissions', subId, 'review', () => _reviewAsPosterImpl(subId, status), () => { const x = _lsFind('tp_submissions', q => q.subId === subId); return !x || x.status !== 'Pending'; });
+        }
+        function _reviewAsPosterImpl(subId, status) {
             const au = JSON.parse(localStorage.getItem('tp_activeUser') || 'null');
             if (!au) return;
             const input = document.getElementById('poster-remark-' + subId);
@@ -2585,7 +2666,7 @@ function applySubmissionReview(subId, newStatus, remark, reviewer, reviewerUid) 
     let refBonus = null, posterRefund = 0;
     sub.status = newStatus;
     sub.reviewedBy = who;
-    sub.reviewedAt = Date.now();
+    sub.reviewedAt = window.tpNow();
     sub.adminRemark = remark || ((newStatus === 'Approved' ? 'Approved by ' : 'Rejected by ') + who);
 
     if (newStatus === 'Approved') {
@@ -2674,7 +2755,7 @@ function closeTaskAndRefund(taskId, by) {
     t.refunded = round2((t.refunded || 0) + refund);
     t.feeCollected = round2((t.feeCollected || 0) + fee);
     t.closeFeePct = feePct;
-    t.closedAt = Date.now();
+    t.closedAt = window.tpNow();
     t.status = 'Closed';
     t.adminRemark = `Closed by ${by} — Rs. ${refund.toFixed(2)} refund bhayo` + (fee > 0 ? ` (${feePct}% fee Rs. ${fee.toFixed(2)} katiyo)` : '');
     localStorage.setItem('tp_users', JSON.stringify(users));
@@ -2748,19 +2829,29 @@ function closeTaskAndRefund(taskId, by) {
             const submitBtn = document.getElementById('posttask-submit-btn');
             if (submitBtn) { submitBtn.disabled = true; submitBtn.classList.add('opacity-50', 'cursor-not-allowed'); }
 
-            const finalizePost = (imgKey) => {
+            const finalizePost = async (imgKey) => {
                 const c2 = calcPostTask();   // re-check balance right before deducting
                 if (c2.error) { alert(c2.error); renderPostTaskForm(); return; }
+                if (!clockOk()) { renderPostTaskForm(); return; }
                 const users = JSON.parse(localStorage.getItem('tp_users'));
                 const poster = users.find(u => u.uid === JSON.parse(localStorage.getItem('tp_activeUser')).uid);
-                poster.balance = round2((poster.balance || 0) - c2.total);   // escrow: fund locked until workers are paid / task closed
-                refreshActiveUserEverywhere(poster);
-                document.getElementById('user-display-balance').innerText = poster.balance.toFixed(2);
-                renderWithdrawProgress(poster);
+                // Escrow: fund server ko asli balance bata atomic katincha (balance kam bhaye server le rokchha)
+                let txr;
+                try {
+                    txr = await window.tpUserTx(poster.uid, (r, now, info) => {
+                        const bal = Number(r.balance) || 0;
+                        if (r.status === 'Banned') { info.banned = true; return false; }
+                        if (c2.total > bal) { info.low = true; return false; }
+                        r.balance = _rnd(bal - c2.total);
+                        return true;
+                    });
+                } catch (e) { console.error(e); alert('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error')); renderPostTaskForm(); return; }
+                if (!txr.committed) { alert(txr.info.banned ? 'Yo account ban cha.' : txr.info.low ? 'Balance paryapta chaina. Pahile "Add Fund" garnus.' : 'Server ma save bhayena, feri try garnus.'); renderPostTaskForm(); afterServerWrite(); return; }
+                afterServerWrite();
 
                 const tasks = JSON.parse(localStorage.getItem('tp_tasks'));
                 tasks.push({
-                    id: Date.now(), createdAt: Date.now(), title, category, link, description,
+                    id: window.tpNow(), createdAt: window.tpNow(), title, category, link, description,
                     reward: c2.reward, maxWorkers: c2.workers, budget: c2.total, paidOut: 0, refunded: 0,
                     postedBy: poster.uid, postedByName: poster.name,
                     status: 'Pending', adminRemark: 'Pending review', image: imgKey || null
@@ -2931,7 +3022,7 @@ function closeTaskAndRefund(taskId, by) {
                         const submissions = JSON.parse(localStorage.getItem('tp_submissions') || '[]');
 
                         submissions.push({
-                            subId: Date.now(),
+                            subId: window.tpNow(),
                             taskId: taskId,
                             postedBy: _task.postedBy || null,
                             postedByName: _task.postedByName || null,
@@ -3175,7 +3266,7 @@ function closeTaskAndRefund(taskId, by) {
                         if (tpFindDuplicateTxn(account)) { alert('Yo Transaction ID pahile nai use bhaisakeko cha.'); resetBtn(); return; }
                         let deposits = JSON.parse(localStorage.getItem('tp_deposits') || '[]');
                         deposits.push({
-                            depositId: Date.now(),
+                            depositId: window.tpNow(),
                             uid: activeUser.uid,
                             userName: activeUser.name,
                             method: method,
@@ -3246,7 +3337,7 @@ function closeTaskAndRefund(taskId, by) {
         function openHelpModal() { document.getElementById('help-modal').classList.remove('hidden'); }
         function closeHelpModal() { document.getElementById('help-modal').classList.add('hidden'); }
 
-        function submitWithdrawalRequest() {
+        async function submitWithdrawalRequest() {
             const method = document.getElementById('withdraw-method').value;
             const account = document.getElementById('withdraw-account').value.trim();
             const amount = parseFloat(document.getElementById('withdraw-amount').value);
@@ -3261,25 +3352,34 @@ function closeTaskAndRefund(taskId, by) {
                 return;
             }
 
-            // work on the newest copy of the user so admin/poster changes are never overwritten
+            if (!clockOk()) return;
             const au = JSON.parse(localStorage.getItem('tp_activeUser') || 'null');
-            let users = JSON.parse(localStorage.getItem('tp_users') || '[]');
-            let u = au ? users.find(x => x.uid === au.uid) : null;
+            const u = au ? (JSON.parse(localStorage.getItem('tp_users') || '[]').find(x => x.uid === au.uid) || au) : null;
             if (!u) { alert('Session expire vayo, kripaya pheri login garnus.'); return; }
-            if (amount > (u.balance || 0)) {
-                alert('Tapaiko balance ma teti amount chaina!');
-                return;
+            if (window.__wdBusy) return;
+            window.__wdBusy = true;
+            const minW = Number(settings.minWithdrawal) || 0;
+            let res;
+            try {
+                // Balance server ko asli data bata check + deduct (atomic) — local balance ma bharosa gardaina.
+                res = await window.tpUserTx(u.uid, (r, now, info) => {
+                    const bal = Number(r.balance) || 0;
+                    if (r.status === 'Banned') { info.banned = true; return false; }
+                    if (amount < minW) { info.min = true; return false; }
+                    if (amount > bal) { info.low = true; return false; }
+                    r.balance = _rnd(bal - amount);
+                    return true;
+                });
+            } catch (e) { console.error(e); window.__wdBusy = false; alert('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error')); return; }
+            if (!res.committed) {
+                window.__wdBusy = false;
+                alert(res.info.banned ? 'Yo account ban cha.' : res.info.min ? `Minimum withdrawal amount Rs. ${minW} ho!` : res.info.low ? 'Tapaiko balance ma teti amount chaina!' : 'Server ma save bhayena, feri try garnus.');
+                afterServerWrite(); return;
             }
 
-            u.balance = round2((u.balance || 0) - amount);
-            localStorage.setItem('tp_users', JSON.stringify(users));
-            localStorage.setItem('tp_activeUser', JSON.stringify(u));
-            document.getElementById('user-display-balance').innerText = u.balance.toFixed(2);
-            renderWithdrawProgress(u);
-
-            let withdrawals = JSON.parse(localStorage.getItem('tp_withdrawals'));
+            let withdrawals = JSON.parse(localStorage.getItem('tp_withdrawals') || '[]');
             withdrawals.push({
-                withdrawId: Date.now(),
+                withdrawId: window.tpNow(),
                 uid: u.uid,
                 userName: u.name,
                 method: method,
@@ -3288,6 +3388,8 @@ function closeTaskAndRefund(taskId, by) {
                 status: 'Pending'
             });
             localStorage.setItem('tp_withdrawals', JSON.stringify(withdrawals));
+            window.__wdBusy = false;
+            afterServerWrite();
 
             showToast('Withdrawal request sent successfully!');
             closeWithdrawModal();
@@ -3310,7 +3412,7 @@ const TP_PAGE_SIZE = 15;          // rows per page in tables
 
 function tpGet(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (e) { return d; } }
 function tpSet(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
-function tpId() { return Date.now() + '_' + Math.random().toString(36).slice(2, 7); }
+function tpId() { return window.tpNow() + '_' + Math.random().toString(36).slice(2, 7); }
 
 // One random id per browser — used only to stop one person making many accounts for referral bonus
 function tpDeviceId() {
@@ -3370,7 +3472,7 @@ function tpSigNow() {
 function tpNotify(uid, text, type) {
     if (!uid) return;
     const n = tpGet('tp_notifications', []);
-    n.push({ id: tpId(), uid: uid, text: String(text), type: type || 'info', ts: Date.now(), read: false });
+    n.push({ id: tpId(), uid: uid, text: String(text), type: type || 'info', ts: window.tpNow(), read: false });
     if (n.length > 3000) n.splice(0, n.length - 3000);
     tpSet('tp_notifications', n);
 }
@@ -3378,7 +3480,7 @@ function tpNotify(uid, text, type) {
 // ---------- ADMIN ACTION LOG ----------
 function tpAdminLog(action, target, detail) {
     const l = tpGet('tp_adminlog', []);
-    l.push({ id: tpId(), ts: Date.now(), admin: window.TP_ADMIN_EMAIL || 'admin', action: String(action), target: String(target || ''), detail: String(detail || '') });
+    l.push({ id: tpId(), ts: window.tpNow(), admin: window.TP_ADMIN_EMAIL || 'admin', action: String(action), target: String(target || ''), detail: String(detail || '') });
     if (l.length > 5000) l.splice(0, l.length - 5000);
     tpSet('tp_adminlog', l);
 }
@@ -3779,7 +3881,7 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
                         email: email,
                         userPassword: password,          // visible only to admin (see database rules)
                         isAdmin: isAdminEmail,
-                        createdAt: new Date().toISOString()
+                        createdAt: new Date(window.tpNow()).toISOString()
                     });
                 } catch (dbErr) {
                     console.warn("Database save issue:", dbErr);
@@ -3955,7 +4057,7 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
             dataUrl = await _shrinkDataUrl(dataUrl);
             const key = 'img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
             try { await _idbPut(key, dataUrl); } catch (e) {}
-            const wr = db.ref('app_images/' + key).set({ data: dataUrl, ts: Date.now(), by: auth.currentUser ? auth.currentUser.uid : null });
+            const wr = db.ref('app_images/' + key).set({ data: dataUrl, ts: window.tpNow(), by: auth.currentUser ? auth.currentUser.uid : null });
             await Promise.race([wr, new Promise((_, rej) => setTimeout(() => rej(new Error('Internet slow cha — upload time out')), 30000))]);
             return key;
         };
