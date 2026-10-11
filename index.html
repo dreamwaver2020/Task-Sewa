@@ -130,7 +130,10 @@
     },
     signOut: async function () {
       if (PAGE === 'admin') await Promise.all(SHARD_IDS.map(function (id) { return SH[id].auth.signOut(); }));
-      else await SH[ACT].auth.signOut();
+      else {
+        await SH[ACT].auth.signOut();
+        await Promise.all(SHARD_IDS.filter(function (id) { return id !== ACT && SH[id].auth.currentUser && SH[id].auth.currentUser.isAnonymous; }).map(function (id) { return SH[id].auth.signOut().catch(function () {}); }));
+      }
     }
   };
   function mk(kind) {
@@ -166,13 +169,18 @@
       return fn(r, window.tpServerNow(), info) === true ? r : undefined;
     }, undefined, false).then(function (res) { return { committed: !!res.committed, info: info }; });
   };
-  function liveShards() { return PAGE === 'admin' ? SHARD_IDS.filter(function (id) { return SH[id].auth.currentUser; }) : [ACT]; }
+  // EX = user page ma ACT bahek aru shard jasma anonymous sign-in bhayera connect bhayeko cha (task owner le arko shard ko worker ko proof herna / balance dina)
+  var EX = {};
+  function liveShards() {
+    if (PAGE === 'admin') return SHARD_IDS.filter(function (id) { return SH[id].auth.currentUser; });
+    return SHARD_IDS.filter(function (id) { return id === ACT || EX[id]; });
+  }
   function route(lsKey, id, e) {
-    if (PAGE !== 'admin') return [ACT];
+    if (PAGE !== 'admin' && liveShards().length < 2) return [ACT];   // ek matra shard connect cha bhane purano behaviour
     if (lsKey === 'tp_tasks') return liveShards();
     var w = S.where[lsKey + '|' + id]; if (w) return [w];
     var u = e && e.uid != null ? S.where['tp_users|' + idStr(e.uid)] : null;
-    return [u || SHARD_IDS[0]];
+    return [u || (PAGE === 'admin' ? SHARD_IDS[0] : ACT)];
   }
   function dbOf(lsKey, id, e) { return SH[route(lsKey, id, e)[0]].db; }
   function W(lsKey, cfg, id, e, op, arg) {
@@ -597,6 +605,7 @@
   function stopAll() {
     S.unsubs.splice(0).forEach(function (u) { try { u(); } catch (e) {} });
     Object.keys(S.sched).forEach(function (k) { clearTimeout(S.sched[k]); }); S.sched = {};
+    EX = {};
     S.tracked = {}; S.remote = {}; S.settingsRemote = null; S.pushed = {}; S.ready = false; S.pending = 0; S.defer = {};
     S.scoped = false; S.sawMine = false; S.legacy = new Map(); S.where = {}; S.seenIn = {}; S.legacyBy = {};
   }
@@ -616,6 +625,46 @@
       return;
     }
     begin();
+  }
+  // User page: aru shard (jaha tapaiko account chaina) ma anonymous sign-in garera tasks / submissions / users sunne.
+  // Yesle garda arko shard ko worker le pathayeko proof task owner ko Task Approvals ma aaucha, ra approve garda worker ko balance ma credit hunchha.
+  function exBadge() {
+    try {
+      var bad = Object.keys(S.exErr || {}).filter(function (k) { return S.exErr[k]; });
+      var el = document.getElementById('tp-ex-badge');
+      if (!bad.length) { if (el) el.remove(); return; }
+      if (!el) {
+        el = document.createElement('div'); el.id = 'tp-ex-badge';
+        el.style.cssText = 'position:fixed;left:10px;bottom:40px;z-index:99999;font:700 10px/1.3 system-ui,sans-serif;padding:6px 10px;border-radius:10px;border:1px solid rgba(239,68,68,.6);background:rgba(15,23,42,.95);color:#fca5a5;max-width:92vw';
+        document.body.appendChild(el);
+      }
+      el.textContent = bad.map(function (k) { return '\u26A0 Shard ' + k + ' connect bhayena: ' + S.exErr[k]; }).join(' | ') + ' \u2014 arko shard ko user ko proof/approval dekhidaina.';
+    } catch (e) {}
+  }
+  function attachExtraShards() {
+    var fu = S.fuid; S.exErr = S.exErr || {};
+    SHARD_IDS.forEach(function (id) {
+      if (id === ACT) return;
+      (function tryOne() {
+        if (S.fuid !== fu || EX[id]) return;
+        var a = SH[id].auth;
+        var p = a.currentUser ? Promise.resolve(a.currentUser) : a.signInAnonymously().then(function (c) { return c.user; });
+        p.then(function () {
+          if (S.fuid !== fu || EX[id]) return;
+          EX[id] = true; S.exErr[id] = ''; exBadge();
+          var d = SH[id].db;
+          listen('tp_tasks', d.ref('app_tasks'), id);
+          listen('tp_submissions', d.ref('app_submissions'), id);
+          listen('tp_users', d.ref('app_users'), id);
+        }).catch(function (err) {
+          var code = String((err && (err.code || err.message)) || err);
+          console.warn('extra shard ' + id, code);
+          S.exErr[id] = /operation-not-allowed|admin-restricted/.test(code) ? 'Anonymous sign-in off (Firebase Console > Authentication > Sign-in method > Anonymous > Enable)' : code;
+          exBadge();
+          setTimeout(tryOne, 20000);       // auto-retry
+        });
+      })();
+    });
   }
   function begin() {
     S.pending = 1;                                   // guard so we don't resolve early
@@ -639,6 +688,7 @@
       var th = tr.on('value', function (d) { if (d.exists()) onAccountRemoved(); }, function () {});
       S.unsubs.push(function () { try { tr.off('value', th); } catch (e) {} });
     }
+    if (PAGE !== 'admin') attachExtraShards();
     srcDone();                                       // release guard
     setTimeout(function () { if (!S.ready) { S.pending = 0; S.ready = true; replay(); S.readyResolvers.splice(0).forEach(function (r) { r(); }); fire(); } }, 12000);
   }
@@ -652,7 +702,7 @@
   }
   SHARD_IDS.forEach(function (id) {
     SH[id].auth.onAuthStateChanged(function (u) {
-      if (u) { if (PAGE !== 'admin' && ACT !== id) setActive(id); onAuthUser(u); }
+      if (u) { if (PAGE !== 'admin' && u.isAnonymous) return; if (PAGE !== 'admin' && ACT !== id) setActive(id); onAuthUser(u); }
       else if ((PAGE === 'admin' ? SHARD_IDS[0] : ACT) === id) onAuthUser(null);
     });
   });
@@ -1274,7 +1324,7 @@
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('referrals')" id="sidebar-link-referrals" class="sidebar-link"><i class="fa-solid fa-user-group w-5 text-center"></i><span>My Referrals</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('leaderboard')" id="sidebar-link-leaderboard" class="hidden sidebar-link"><i class="fa-solid fa-trophy w-5 text-center"></i><span>Leaderboard</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('posttask')" id="sidebar-link-posttask" class="hidden sidebar-link"><i class="fa-solid fa-square-plus w-5 text-center"></i><span>Post a Task</span></a>
-                <a href="javascript:void(0)" onclick="sidebarGoToTab('reviews')" id="sidebar-link-reviews" class="sidebar-link"><i class="fa-solid fa-clipboard-check w-5 text-center"></i><span>Task Approvals</span></a>
+                <a href="javascript:void(0)" onclick="sidebarGoToTab('reviews')" id="sidebar-link-reviews" class="sidebar-link"><i class="fa-solid fa-clipboard-check w-5 text-center"></i><span>Task Approvals</span><span id="sidebar-reviews-badge" class="hidden ml-auto bg-fuchsia-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">0</span></a>
 
                 <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Services</p>
                 <a href="javascript:void(0)" onclick="sidebarRunAction('openAddFundModal')" class="sidebar-link"><i class="fa-solid fa-wallet w-5 text-center"></i><span>Add Fund</span></a>
@@ -1425,6 +1475,18 @@
                         </div>
                         <button onclick="spinNow()" id="spin-btn" class="w-full bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-400 hover:to-rose-400 text-white font-extrabold text-xs py-2.5 rounded-xl transition shadow-lg shadow-pink-500/20">Spin Now</button>
                     </div>
+                </div>
+
+                <!-- Pending approvals alert (task poster) -->
+                <div id="pending-approvals-alert" class="hidden bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-fuchsia-500/20 text-fuchsia-300 flex items-center justify-center text-lg"><i class="fa-solid fa-clipboard-check"></i></div>
+                        <div>
+                            <p class="text-sm font-extrabold text-white"><span id="pending-approvals-num">0</span> approval baki</p>
+                            <p class="text-[11px] text-slate-400">Tapaiko task ma workers le proof pathayeko cha — review garnus.</p>
+                        </div>
+                    </div>
+                    <button onclick="switchUserTab('reviews')" class="bg-fuchsia-500 hover:bg-fuchsia-400 text-white font-bold text-xs px-4 py-2 rounded-xl transition whitespace-nowrap">Review garnus</button>
                 </div>
 
                 <!-- Tabs Navigation -->
@@ -2468,6 +2530,17 @@
 
         // ---------- POSTER: REVIEW WORKERS' PROOFS ----------
         let _reviewSig = null;
+        // Pending-approval count: top tab badge + sidebar badge + dashboard alert card
+        function updateReviewBadges(n) {
+            ['reviews-count-badge', 'sidebar-reviews-badge'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) { el.innerText = n; el.classList.toggle('hidden', n === 0); }
+            });
+            const alertBox = document.getElementById('pending-approvals-alert');
+            const num = document.getElementById('pending-approvals-num');
+            if (num) num.innerText = n;
+            if (alertBox) { alertBox.classList.toggle('hidden', n === 0); alertBox.classList.toggle('flex', n > 0); }
+        }
         function loadMyReviews(force) {
             const tbody = document.getElementById('my-reviews-tbody');
             if (!tbody) return;
@@ -2475,8 +2548,7 @@
             if (!au) return;
             const subs = JSON.parse(localStorage.getItem('tp_submissions') || '[]').filter(s => s.postedBy === au.uid);
             const pending = subs.filter(s => s.status === 'Pending');
-            const badge = document.getElementById('reviews-count-badge');
-            if (badge) { badge.innerText = pending.length; badge.classList.toggle('hidden', pending.length === 0); }
+            updateReviewBadges(pending.length);
 
             const sig = pending.map(s => s.subId).join(',');
             if (force || sig !== _reviewSig) {   // don't wipe a remark the owner is typing
