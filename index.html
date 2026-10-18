@@ -10,7 +10,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
-    <script>window.TP_PAGE = 'user'; window.tpNow = function () { return (typeof window.tpServerNow === 'function') ? window.tpServerNow() : Date.now(); };</script>
+    <script>window.TP_PAGE = 'user';</script>
     <script>
 /* ===================================================================
    TP FIREBASE SYNC LAYER  (shared by user page + admin page)
@@ -24,7 +24,17 @@
 (function () {
   'use strict';
   var PAGE = window.TP_PAGE || 'user';           // 'user' | 'admin'
-  var ADMIN_EMAIL = 'dreamwaver820@gmail.com';
+  // Admin email code ma plain text ma chaina (SHA-256 hash matra). Asli suraksha Firebase Database Rules ho (firebase-rules.json hernus).
+  var ADMIN_EMAIL_HASH = 'bab320b8897ee8391a3007cf71c3f30725384e91254d49dec2344819e03ef4cf';
+  var REQUIRE_VERIFIED = true;   // admin email Firebase ma verified huna parcha (rules ma pani email_verified check cha)
+  async function sha256Hex(str) {
+    var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  async function isAdminEmail(email) {
+    try { return (await sha256Hex('tp-admin|' + String(email || '').trim().toLowerCase())) === ADMIN_EMAIL_HASH; }
+    catch (e) { return false; }   // crypto.subtle chaina => admin hoina (fail closed)
+  }
   var SHARDS_CFG = [
     { id: 'A', weight: 1, config: {
       apiKey: "AIzaSyB8SKLd3b9AeudCHU3BBc9qVsJTicCoYp0",
@@ -96,12 +106,13 @@
           var sid = SHARD_IDS[j];
           if (rs[j].status === 'fulfilled') { delete S.shErr[sid]; continue; }
           var er = rs[j].reason, code = String((er && er.code) || (er && er.message) || '');
-          if (BADLOGIN.test(code) && String(email).trim().toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+          if (BADLOGIN.test(code) && await isAdminEmail(email)) {
             // A ma password sahi cha, B ma admin account chaina => B ma same email/password le auto-banaune (admin email matra)
             try {
               var cc = await SH[sid].auth.createUserWithEmailAndPassword(email, pw);
-              try { await SH[sid].db.ref('users/' + cc.user.uid).set({ fullName: 'Admin', email: String(email).trim().toLowerCase(), isAdmin: true, createdAt: new Date(window.tpNow()).toISOString() }); }
-              catch (e3) { S.shErr[sid] = 'users/isAdmin save fail: ' + ((e3 && (e3.code || e3.message)) || e3); }
+              try { await cc.user.sendEmailVerification(); } catch (ev) {}
+              try { await SH[sid].db.ref('users/' + cc.user.uid).set({ fullName: 'Admin', email: String(email).trim().toLowerCase(), createdAt: new Date().toISOString() }); }
+              catch (e3) { S.shErr[sid] = 'users profile save fail: ' + ((e3 && (e3.code || e3.message)) || e3); }
               toast('Shard ' + sid + ' ma admin account auto-banayo.');
             } catch (e2) {
               S.shErr[sid] = 'login: ' + ((e2 && (e2.code || e2.message)) || e2);
@@ -130,10 +141,7 @@
     },
     signOut: async function () {
       if (PAGE === 'admin') await Promise.all(SHARD_IDS.map(function (id) { return SH[id].auth.signOut(); }));
-      else {
-        await SH[ACT].auth.signOut();
-        await Promise.all(SHARD_IDS.filter(function (id) { return id !== ACT && SH[id].auth.currentUser && SH[id].auth.currentUser.isAnonymous; }).map(function (id) { return SH[id].auth.signOut().catch(function () {}); }));
-      }
+      else await SH[ACT].auth.signOut();
     }
   };
   function mk(kind) {
@@ -145,42 +153,13 @@
   }
   var auth = mk('auth'), db = mk('db');
   var SV = firebase.database.ServerValue;
-  // ---------- SERVER CLOCK (device ko date/time change garera bonus/spin repeat garna nadine) ----------
-  var CLK = { off: 0, ok: false };
-  SHARD_IDS.forEach(function (id) {
-    try { SH[id].db.ref('.info/serverTimeOffset').on('value', function (sn) { var v = sn.val(); if (typeof v === 'number') { CLK.off = v; CLK.ok = true; } }); } catch (e) {}
-  });
-  window.tpServerNow = function () { return Date.now() + CLK.off; };
-  window.tpClockReady = function () { return CLK.ok; };
-  // ---------- SERVER TRANSACTION on own user record ----------
-  // Balance/bonus/spin jasta kura Firebase ko ASLI (server) data ma re-check garera atomic update huncha.
-  // fn(rawRecord, serverNow, info) => true (commit) | false (abort).  Stale/local data le kahile balance override gardaina.
-  // ONE-TIME GATE: approve/close jasta paisa chalne kaam server ma ek choti matra (double-click / 2 tab / admin+poster double credit rokchha)
-  function gateRef(lsKey, id, tag, e) { var cfg = COLS[lsKey], k = idStr(id); return dbOf(lsKey, k, e).ref(cfg.col).child(k).child('g_' + tag); }
-  window.tpGate = function (lsKey, id, tag, e) {
-    return gateRef(lsKey, id, tag, e).transaction(function (cur) { return cur === null ? window.tpServerNow() : undefined; }, undefined, false).then(function (r) { return !!r.committed; });
-  };
-  window.tpGateRelease = function (lsKey, id, tag, e) { try { return gateRef(lsKey, id, tag, e).remove().catch(function () {}); } catch (x) {} };
-  window.tpUserTx = function (uid, fn) {
-    var ref = SH[ACT].db.ref('app_users').child(idStr(uid)), info = {};
-    return ref.transaction(function (cur) {
-      if (cur === null) return cur;            // local cache khali: Firebase le server ko real value ma retry garcha
-      var r = Object.assign({}, cur); info = {};
-      return fn(r, window.tpServerNow(), info) === true ? r : undefined;
-    }, undefined, false).then(function (res) { return { committed: !!res.committed, info: info }; });
-  };
-  // EX = user page ma ACT bahek aru shard jasma anonymous sign-in bhayera connect bhayeko cha (task owner le arko shard ko worker ko proof herna / balance dina)
-  var EX = {};
-  function liveShards() {
-    if (PAGE === 'admin') return SHARD_IDS.filter(function (id) { return SH[id].auth.currentUser; });
-    return SHARD_IDS.filter(function (id) { return id === ACT || EX[id]; });
-  }
+  function liveShards() { return PAGE === 'admin' ? SHARD_IDS.filter(function (id) { return SH[id].auth.currentUser; }) : [ACT]; }
   function route(lsKey, id, e) {
-    if (PAGE !== 'admin' && liveShards().length < 2) return [ACT];   // ek matra shard connect cha bhane purano behaviour
+    if (PAGE !== 'admin') return [ACT];
     if (lsKey === 'tp_tasks') return liveShards();
     var w = S.where[lsKey + '|' + id]; if (w) return [w];
     var u = e && e.uid != null ? S.where['tp_users|' + idStr(e.uid)] : null;
-    return [u || (PAGE === 'admin' ? SHARD_IDS[0] : ACT)];
+    return [u || SHARD_IDS[0]];
   }
   function dbOf(lsKey, id, e) { return SH[route(lsKey, id, e)[0]].db; }
   function W(lsKey, cfg, id, e, op, arg) {
@@ -428,7 +407,7 @@
         } else upd[k] = encVal(e[k]);
         any = true;
       });
-      Object.keys(prev).forEach(function (k) { if (!(k in e) && k.indexOf('g_') !== 0) { upd[k] = null; any = true; } });
+      Object.keys(prev).forEach(function (k) { if (!(k in e)) { upd[k] = null; any = true; } });
       if (!any) return;
       var nb = Object.assign({}, prev, e); Object.keys(prev).forEach(function (k) { if (!(k in e)) delete nb[k]; });
       base.set(id, nb);
@@ -605,7 +584,6 @@
   function stopAll() {
     S.unsubs.splice(0).forEach(function (u) { try { u(); } catch (e) {} });
     Object.keys(S.sched).forEach(function (k) { clearTimeout(S.sched[k]); }); S.sched = {};
-    EX = {};
     S.tracked = {}; S.remote = {}; S.settingsRemote = null; S.pushed = {}; S.ready = false; S.pending = 0; S.defer = {};
     S.scoped = false; S.sawMine = false; S.legacy = new Map(); S.where = {}; S.seenIn = {}; S.legacyBy = {};
   }
@@ -616,54 +594,16 @@
   function start(user) {
     stopAll();
     S.fuid = user.uid; S.email = (user.email || '').toLowerCase(); S.removed = false;
-    S.isAdmin = S.email === ADMIN_EMAIL.toLowerCase();
-    if (PAGE === 'admin' && !S.isAdmin) {
-      // other accounts flagged isAdmin in /users/{uid} (set by the main admin) are allowed too
-      db.ref('users/' + idStr(user.uid) + '/isAdmin').once('value').then(function (d) {
-        if (d.val() === true && S.fuid === user.uid) { S.isAdmin = true; begin(); }
-      }).catch(function () {});
+    if (user.emailVerified !== true) {      // email verify nabhaye data load / login hudaina
+      if (PAGE === 'user' && RAW_GET.call(localStorage, 'tp_activeUser')) { try { auth.signOut(); } catch (e) {} }   // purano unverified session => logout
       return;
     }
-    begin();
-  }
-  // User page: aru shard (jaha tapaiko account chaina) ma anonymous sign-in garera tasks / submissions / users sunne.
-  // Yesle garda arko shard ko worker le pathayeko proof task owner ko Task Approvals ma aaucha, ra approve garda worker ko balance ma credit hunchha.
-  function exBadge() {
-    try {
-      var bad = Object.keys(S.exErr || {}).filter(function (k) { return S.exErr[k]; });
-      var el = document.getElementById('tp-ex-badge');
-      if (!bad.length) { if (el) el.remove(); return; }
-      if (!el) {
-        el = document.createElement('div'); el.id = 'tp-ex-badge';
-        el.style.cssText = 'position:fixed;left:10px;bottom:40px;z-index:99999;font:700 10px/1.3 system-ui,sans-serif;padding:6px 10px;border-radius:10px;border:1px solid rgba(239,68,68,.6);background:rgba(15,23,42,.95);color:#fca5a5;max-width:92vw';
-        document.body.appendChild(el);
-      }
-      el.textContent = bad.map(function (k) { return '\u26A0 Shard ' + k + ' connect bhayena: ' + S.exErr[k]; }).join(' | ') + ' \u2014 arko shard ko user ko proof/approval dekhidaina.';
-    } catch (e) {}
-  }
-  function attachExtraShards() {
-    var fu = S.fuid; S.exErr = S.exErr || {};
-    SHARD_IDS.forEach(function (id) {
-      if (id === ACT) return;
-      (function tryOne() {
-        if (S.fuid !== fu || EX[id]) return;
-        var a = SH[id].auth;
-        var p = a.currentUser ? Promise.resolve(a.currentUser) : a.signInAnonymously().then(function (c) { return c.user; });
-        p.then(function () {
-          if (S.fuid !== fu || EX[id]) return;
-          EX[id] = true; S.exErr[id] = ''; exBadge();
-          var d = SH[id].db;
-          listen('tp_tasks', d.ref('app_tasks'), id);
-          listen('tp_submissions', d.ref('app_submissions'), id);
-          listen('tp_users', d.ref('app_users'), id);
-        }).catch(function (err) {
-          var code = String((err && (err.code || err.message)) || err);
-          console.warn('extra shard ' + id, code);
-          S.exErr[id] = /operation-not-allowed|admin-restricted/.test(code) ? 'Anonymous sign-in off (Firebase Console > Authentication > Sign-in method > Anonymous > Enable)' : code;
-          exBadge();
-          setTimeout(tryOne, 20000);       // auto-retry
-        });
-      })();
+    var _uid = user.uid;
+    isAdminEmail(S.email).then(function (ok) {
+      if (S.fuid !== _uid) return;
+      S.isAdmin = ok && (!REQUIRE_VERIFIED || user.emailVerified === true);
+      if (PAGE === 'admin' && !S.isAdmin) return;
+      begin();
     });
   }
   function begin() {
@@ -688,7 +628,6 @@
       var th = tr.on('value', function (d) { if (d.exists()) onAccountRemoved(); }, function () {});
       S.unsubs.push(function () { try { tr.off('value', th); } catch (e) {} });
     }
-    if (PAGE !== 'admin') attachExtraShards();
     srcDone();                                       // release guard
     setTimeout(function () { if (!S.ready) { S.pending = 0; S.ready = true; replay(); S.readyResolvers.splice(0).forEach(function (r) { r(); }); fire(); } }, 12000);
   }
@@ -702,7 +641,7 @@
   }
   SHARD_IDS.forEach(function (id) {
     SH[id].auth.onAuthStateChanged(function (u) {
-      if (u) { if (PAGE !== 'admin' && u.isAnonymous) return; if (PAGE !== 'admin' && ACT !== id) setActive(id); onAuthUser(u); }
+      if (u) { if (PAGE !== 'admin' && ACT !== id) setActive(id); onAuthUser(u); }
       else if ((PAGE === 'admin' ? SHARD_IDS[0] : ACT) === id) onAuthUser(null);
     });
   });
@@ -760,14 +699,14 @@
     if (found && !found.firebaseUid) { found.firebaseUid = fu.uid; await col.child(idStr(found.uid)).update({ firebaseUid: fu.uid }); }
     if (!found) {
       var all = S.remote.tp_users ? Array.from(S.remote.tp_users.values()) : [];
-      found = Object.assign({ name: email, balance: 0, totalEarned: 0, status: 'Active', isAdmin: false, referredBy: null, referralCount: 0, referralEarnings: 0, firstApprovalRewarded: false, checkInStreak: 0, lastCheckIn: null, lastSpin: null, joinedAt: new Date(window.tpNow()).toISOString() }, extra || {}, { uid: newUid(all), firebaseUid: fu.uid, email: email });
+      found = Object.assign({ name: email, balance: 0, totalEarned: 0, status: 'Active', isAdmin: false, referredBy: null, referralCount: 0, referralEarnings: 0, firstApprovalRewarded: false, checkInStreak: 0, lastCheckIn: null, lastSpin: null, joinedAt: new Date().toISOString() }, extra || {}, { isAdmin: false, password: undefined, uid: newUid(all), firebaseUid: fu.uid, email: email });
       await track(col.child(idStr(found.uid)).set(enc(clean(COLS.tp_users, found))));
     }
     (S.remote.tp_users || (S.remote.tp_users = new Map())).set(idStr(found.uid), clean(COLS.tp_users, found));
     S.pushed.tp_users = S.pushed.tp_users || {}; S.pushed.tp_users[idStr(found.uid)] = true;
     var cur = []; try { cur = JSON.parse(RAW_GET.call(localStorage, 'tp_users') || '[]'); } catch (e) {}
     cur = cur.filter(function (u) { return u.uid !== found.uid; });
-    var local = Object.assign({}, found, extra && extra.password ? { password: extra.password } : {});
+    var local = Object.assign({}, found);
     cur.push(local); RAW_SET.call(localStorage, 'tp_users', JSON.stringify(cur));
     return local;
   }
@@ -803,7 +742,7 @@
   window.TPSync = {
     auth: auth, db: db, SH: SH, SHARD_IDS: SHARD_IDS, activeShard: function () { return ACT; },
     dbFor: function (lsKey, id) { return dbOf(lsKey, id); },
-    ADMIN_EMAIL: ADMIN_EMAIL, SV: SV, idStr: idStr,
+    isAdminEmail: isAdminEmail, REQUIRE_VERIFIED: REQUIRE_VERIFIED, SV: SV, idStr: idStr,
     normEmail: normEmail, waitLoaded: waitLoaded, claimEmail: claimEmail, ensureProfile: ensureProfile,
     whenReady: whenReady,
     state: S,
@@ -1002,12 +941,6 @@
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .bg-slate-900\/60 .text-white:not([class*="bg-"]){color:#1e1b4b}
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .bg-slate-700\/50 .text-white:not([class*="bg-"]){color:#1e1b4b}
         #notif-panel h4{color:#1e1b4b}
-        /* Notification list: bright readable text on the dark panel */
-        #notif-panel #notif-list .text-slate-200{color:#f8fafc}
-        #notif-panel #notif-list .text-slate-500{color:#a5f3fc}
-        #notif-panel #notif-list > div{border-color:rgba(255,255,255,.14)}
-        #notif-panel #notif-list > div:hover{background-color:rgba(255,255,255,.08)}
-        #notif-panel #notif-list > div.bg-indigo-500\/10{background-color:rgba(129,140,248,.18)}
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .from-slate-900.bg-gradient-to-r{background-image:linear-gradient(to right,#fff,transparent)}
         :is(#app-view,#notif-panel,#image-modal,#withdraw-modal,#addfund-modal,#spin-result-modal,#help-modal) .from-slate-900.bg-gradient-to-l{background-image:linear-gradient(to left,#fff,transparent)}
         #app-view #announcement-bar{background:#fff1e0;border-color:#fdba74;color:#9a3412}
@@ -1324,7 +1257,7 @@
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('referrals')" id="sidebar-link-referrals" class="sidebar-link"><i class="fa-solid fa-user-group w-5 text-center"></i><span>My Referrals</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('leaderboard')" id="sidebar-link-leaderboard" class="hidden sidebar-link"><i class="fa-solid fa-trophy w-5 text-center"></i><span>Leaderboard</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('posttask')" id="sidebar-link-posttask" class="hidden sidebar-link"><i class="fa-solid fa-square-plus w-5 text-center"></i><span>Post a Task</span></a>
-                <a href="javascript:void(0)" onclick="sidebarGoToTab('reviews')" id="sidebar-link-reviews" class="sidebar-link"><i class="fa-solid fa-clipboard-check w-5 text-center"></i><span>Task Approvals</span><span id="sidebar-reviews-badge" class="hidden ml-auto bg-fuchsia-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">0</span></a>
+                <a href="javascript:void(0)" onclick="sidebarGoToTab('reviews')" id="sidebar-link-reviews" class="sidebar-link"><i class="fa-solid fa-clipboard-check w-5 text-center"></i><span>Task Approvals</span></a>
 
                 <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Services</p>
                 <a href="javascript:void(0)" onclick="sidebarRunAction('openAddFundModal')" class="sidebar-link"><i class="fa-solid fa-wallet w-5 text-center"></i><span>Add Fund</span></a>
@@ -1475,18 +1408,6 @@
                         </div>
                         <button onclick="spinNow()" id="spin-btn" class="w-full bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-400 hover:to-rose-400 text-white font-extrabold text-xs py-2.5 rounded-xl transition shadow-lg shadow-pink-500/20">Spin Now</button>
                     </div>
-                </div>
-
-                <!-- Pending approvals alert (task poster) -->
-                <div id="pending-approvals-alert" class="hidden bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
-                    <div class="flex items-center gap-3">
-                        <div class="w-10 h-10 rounded-xl bg-fuchsia-500/20 text-fuchsia-300 flex items-center justify-center text-lg"><i class="fa-solid fa-clipboard-check"></i></div>
-                        <div>
-                            <p class="text-sm font-extrabold text-white"><span id="pending-approvals-num">0</span> approval baki</p>
-                            <p class="text-[11px] text-slate-400">Tapaiko task ma workers le proof pathayeko cha — review garnus.</p>
-                        </div>
-                    </div>
-                    <button onclick="switchUserTab('reviews')" class="bg-fuchsia-500 hover:bg-fuchsia-400 text-white font-bold text-xs px-4 py-2 rounded-xl transition whitespace-nowrap">Review garnus</button>
                 </div>
 
                 <!-- Tabs Navigation -->
@@ -2002,37 +1923,12 @@
 
         function getSettings() { return JSON.parse(localStorage.getItem('tp_settings')); }
 
-        // Date ahile Firebase SERVER time bata, Nepal time (UTC+5:45) anusar. Device ko date change garda kehi farak pardaina.
-        const _DN = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], _MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        const NPT_OFFSET_MS = (5 * 60 + 45) * 60000;
-        function nptStr(ts, offsetDays) {
-            const d = new Date(ts + NPT_OFFSET_MS + (offsetDays || 0) * 86400000);
-            return _DN[d.getUTCDay()] + ' ' + _MN[d.getUTCMonth()] + ' ' + String(d.getUTCDate()).padStart(2, '0') + ' ' + d.getUTCFullYear();
+        function todayStr() { return new Date().toDateString(); }
+        function yesterdayStr() {
+            const d = new Date();
+            d.setDate(d.getDate() - 1);
+            return d.toDateString();
         }
-        function todayStr() { return nptStr(window.tpNow(), 0); }
-        function yesterdayStr() { return nptStr(window.tpNow(), -1); }
-        function dayNum(str) {
-            const m = /^\w{3} (\w{3}) (\d{1,2}) (\d{4})$/.exec(String(str || '').trim());
-            if (!m) return NaN;
-            const mi = _MN.indexOf(m[1]); if (mi < 0) return NaN;
-            return Math.floor(Date.UTC(+m[3], mi, +m[2]) / 86400000);
-        }
-        // true = aaja claim gareko ya last claim aajako bhanda pachhi ko date (fake date) ho
-        function alreadyClaimed(last, today) {
-            if (!last) return false;
-            today = today || todayStr();
-            const l = dayNum(last), t = dayNum(today);
-            if (isNaN(l)) return String(last) === today;
-            return l >= t;
-        }
-        function clockOk() {
-            if (typeof window.tpClockReady === 'function' && !window.tpClockReady()) { showToast('Server time load hudai cha, 2-3 second pachhi feri try garnus.'); return false; }
-            if (typeof window.tpUserTx !== 'function') { showToast('Server connect bhayena. Page refresh garnus.'); return false; }
-            return true;
-        }
-        const _rnd = x => Math.round(x * 1e6) / 1e6;
-        // Server ma commit bhayepachhi listener le local update garcha; tyo pachhi UI fresh garne
-        function afterServerWrite() { [200, 900].forEach(ms => setTimeout(() => { try { syncFromStorage(true); } catch (e) {} }, ms)); }
 
         function switchView(view) {
             const landingView = document.getElementById('landing-view');
@@ -2199,7 +2095,7 @@
         // ---------- DAILY BONUS ----------
         function renderDailyBonusBtn(user) {
             const btn = document.getElementById('daily-bonus-btn');
-            if (alreadyClaimed(user.lastCheckIn)) {
+            if (user.lastCheckIn === todayStr()) {
                 btn.disabled = true;
                 btn.classList.add('opacity-50', 'cursor-not-allowed');
                 btn.innerHTML = '<i class="fa-solid fa-check"></i><span>Claimed Today</span>';
@@ -2210,36 +2106,38 @@
             }
         }
 
-        async function claimDailyBonus() {
-            if (!clockOk()) return;
-            const user = freshActive();
+        function claimDailyBonus() {
+            let user = freshActive();
             if (!user) return;
-            if (window.__bonusBusy) return;
-            window.__bonusBusy = true;
+            if (user.lastCheckIn === todayStr()) {
+                showToast('Aajako bonus pahile nai claim gareko cha!');
+                return;
+            }
+
+            const settings = getSettings();
+            user.checkInStreak = (user.lastCheckIn === yesterdayStr()) ? (user.checkInStreak || 0) + 1 : 1;
+
             // Daily bonus is fixed at Rs. 0.01 — hard-capped, never more.
             const DAILY_BONUS_CAP = 0.01;
-            const bonus = Math.min(getSettings().dailyBonus || DAILY_BONUS_CAP, DAILY_BONUS_CAP);
-            try {
-                const res = await window.tpUserTx(user.uid, (r, now, info) => {
-                    const today = nptStr(now, 0), yest = nptStr(now, -1);
-                    if (alreadyClaimed(r.lastCheckIn, today)) { info.already = true; return false; }
-                    r.checkInStreak = (r.lastCheckIn === yest) ? (Number(r.checkInStreak) || 0) + 1 : 1;
-                    r.balance = _rnd((Number(r.balance) || 0) + bonus);
-                    r.totalEarned = _rnd((Number(r.totalEarned) || 0) + bonus);
-                    r.lastCheckIn = today;
-                    info.streak = r.checkInStreak;
-                    return true;
-                });
-                if (!res.committed) { showToast(res.info.already ? 'Aajako bonus pahile nai claim gareko cha!' : 'Server ma save bhayena, feri try garnus.'); }
-                else { showToast(`Daily bonus claimed: Rs. ${bonus.toFixed(2)}! 🔥 Streak: ${res.info.streak} days`); }
-            } catch (e) { console.error(e); showToast('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error')); }
-            finally { window.__bonusBusy = false; afterServerWrite(); }
+            let bonus = Math.min(settings.dailyBonus || DAILY_BONUS_CAP, DAILY_BONUS_CAP);
+
+            user.balance = (user.balance || 0) + bonus;
+            user.totalEarned = (user.totalEarned || 0) + bonus;
+            user.lastCheckIn = todayStr();
+
+            refreshActiveUserEverywhere(user);
+            document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
+            renderRankBadge(user);
+            renderStreak(user);
+            renderWithdrawProgress(user);
+            renderDailyBonusBtn(user);
+            showToast(`Daily bonus claimed: Rs. ${bonus.toFixed(2)}! 🔥 Streak: ${user.checkInStreak} days`);
         }
 
         // ---------- SPIN WHEEL ----------
         function renderSpinBtn(user) {
             const btn = document.getElementById('spin-btn');
-            if (alreadyClaimed(user.lastSpin)) {
+            if (user.lastSpin === todayStr()) {
                 btn.disabled = true;
                 btn.classList.add('opacity-50', 'cursor-not-allowed');
                 btn.innerText = 'Come back tomorrow';
@@ -2250,47 +2148,41 @@
             }
         }
 
-        async function spinNow() {
-            if (!clockOk()) return;
-            const user = freshActive();
+        function spinNow() {
+            let user = freshActive();
             if (!user) return;
-            if (window.__spinBusy) return;
-            window.__spinBusy = true;
-            const spinBtn = document.getElementById('spin-btn');
-            spinBtn.disabled = true;
-            // Reward is always between Rs. 0.01 (min) and Rs. 0.05 (max) — never more.
-            const MIN_SPIN_REWARD = 0.01, MAX_SPIN_REWARD = 0.05;
-            let reward = 0;
-            try {
-                // Pahile server ma aajako spin lock + reward credit (atomic). Tespachi matra wheel ghumchha.
-                const res = await window.tpUserTx(user.uid, (r, now, info) => {
-                    const today = nptStr(now, 0);
-                    if (alreadyClaimed(r.lastSpin, today)) { info.already = true; return false; }
-                    reward = parseFloat((Math.random() * (MAX_SPIN_REWARD - MIN_SPIN_REWARD) + MIN_SPIN_REWARD).toFixed(2));
-                    r.balance = _rnd((Number(r.balance) || 0) + reward);
-                    r.totalEarned = _rnd((Number(r.totalEarned) || 0) + reward);
-                    r.lastSpin = today;
-                    return true;
-                });
-                if (!res.committed) {
-                    showToast(res.info.already ? 'Aajako spin pahile nai use gareko cha!' : 'Server ma save bhayena, feri try garnus.');
-                    window.__spinBusy = false; afterServerWrite(); return;
-                }
-            } catch (e) {
-                console.error(e); showToast('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error'));
-                window.__spinBusy = false; afterServerWrite(); return;
+            if (user.lastSpin === todayStr()) {
+                showToast('Aajako spin pahile nai use gareko cha!');
+                return;
             }
 
             const disc = document.getElementById('wheel-disc');
+            // Reward is always between Rs. 0.01 (min) and Rs. 0.05 (max) — never more.
+            const MIN_SPIN_REWARD = 0.01;
+            const MAX_SPIN_REWARD = 0.05;
+            const reward = parseFloat((Math.random() * (MAX_SPIN_REWARD - MIN_SPIN_REWARD) + MIN_SPIN_REWARD).toFixed(2));
+
+            const spins = 5; // full rotations for effect
             const randomOffset = Math.floor(Math.random() * 360);
             const currentRotation = (parseInt(disc.dataset.rotation) || 0);
-            const newRotation = currentRotation + (5 * 360) + randomOffset;
+            const newRotation = currentRotation + (spins * 360) + randomOffset;
             disc.style.transform = `rotate(${newRotation}deg)`;
             disc.dataset.rotation = newRotation;
 
+            document.getElementById('spin-btn').disabled = true;
+
             setTimeout(() => {
-                window.__spinBusy = false;
-                afterServerWrite();
+                user.lastSpin = todayStr();
+                if (reward > 0) {
+                    user.balance = (user.balance || 0) + reward;
+                    user.totalEarned = (user.totalEarned || 0) + reward;
+                }
+                refreshActiveUserEverywhere(user);
+                document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
+                renderRankBadge(user);
+                renderWithdrawProgress(user);
+                renderSpinBtn(user);
+
                 document.getElementById('spin-result-icon').innerText = reward > 0 ? '🎉' : '😅';
                 document.getElementById('spin-result-title').innerText = reward > 0 ? `You Won Rs. ${reward}!` : 'Better Luck Tomorrow';
                 document.getElementById('spin-result-desc').innerText = reward > 0 ? 'Bonus tapaiko balance ma thapiyo.' : 'Bholi feri spin garnus, aaja kehi paunubhayen.';
@@ -2498,24 +2390,7 @@
             box.innerHTML = h ? `<i class="fa-solid fa-circle-check text-emerald-400 mr-1"></i>Link thik cha — <a href="${esc(h)}" target="_blank" rel="noopener noreferrer" style="color:#6366f1;text-decoration:underline">${esc(linkInfo(h).name)} link test garnus</a>` : '<i class="fa-solid fa-triangle-exclamation text-amber-400 mr-1"></i>Link sahi chaina.';
         }
 
-        // ---- Server gate wrapper: paisa chalne kaam arko tab/admin le pahile gareko chha bhane rokcha ----
-        async function tpGuard(lsKey, id, tag, run, isDone) {
-            if (typeof window.tpGate !== 'function') { showToast('Server connect bhayena. Page refresh garnus.'); return; }
-            let ok = false;
-            try { ok = await window.tpGate(lsKey, id, tag); } catch (e) { showToast('Server ma lock bhayena: ' + ((e && (e.code || e.message)) || 'error')); return; }
-            if (!ok) { showToast('Yo kaam arko tab/admin le gardai cha ya pahile nai bhaisakyo (server check).'); try { syncFromStorage(true); } catch (e) {} return; }
-            let res;
-            try { res = run(); } catch (e) { window.tpGateRelease(lsKey, id, tag); throw e; }
-            let done = true; try { done = isDone ? !!isDone(res) : true; } catch (e) {}
-            if (!done) window.tpGateRelease(lsKey, id, tag);
-            return res;
-        }
-        const _lsFind = (k, f) => JSON.parse(localStorage.getItem(k) || '[]').find(f);
-
-        async function closeMyTask(taskId) {
-            return tpGuard('tp_tasks', taskId, 'money', () => _closeMyTaskImpl(taskId), () => { const x = _lsFind('tp_tasks', q => q.id === taskId); return !x || x.status !== 'Approved'; });
-        }
-        function _closeMyTaskImpl(taskId) {
+        function closeMyTask(taskId) {
             const _t = JSON.parse(localStorage.getItem('tp_tasks') || '[]').find(x => x.id === taskId);
             if (!_t) return;
             const _un = taskUnusedFund(_t, JSON.parse(localStorage.getItem('tp_submissions') || '[]'));
@@ -2530,17 +2405,6 @@
 
         // ---------- POSTER: REVIEW WORKERS' PROOFS ----------
         let _reviewSig = null;
-        // Pending-approval count: top tab badge + sidebar badge + dashboard alert card
-        function updateReviewBadges(n) {
-            ['reviews-count-badge', 'sidebar-reviews-badge'].forEach(id => {
-                const el = document.getElementById(id);
-                if (el) { el.innerText = n; el.classList.toggle('hidden', n === 0); }
-            });
-            const alertBox = document.getElementById('pending-approvals-alert');
-            const num = document.getElementById('pending-approvals-num');
-            if (num) num.innerText = n;
-            if (alertBox) { alertBox.classList.toggle('hidden', n === 0); alertBox.classList.toggle('flex', n > 0); }
-        }
         function loadMyReviews(force) {
             const tbody = document.getElementById('my-reviews-tbody');
             if (!tbody) return;
@@ -2548,7 +2412,8 @@
             if (!au) return;
             const subs = JSON.parse(localStorage.getItem('tp_submissions') || '[]').filter(s => s.postedBy === au.uid);
             const pending = subs.filter(s => s.status === 'Pending');
-            updateReviewBadges(pending.length);
+            const badge = document.getElementById('reviews-count-badge');
+            if (badge) { badge.innerText = pending.length; badge.classList.toggle('hidden', pending.length === 0); }
 
             const sig = pending.map(s => s.subId).join(',');
             if (force || sig !== _reviewSig) {   // don't wipe a remark the owner is typing
@@ -2581,12 +2446,7 @@
                 </tr>`).join('');
         }
 
-        async function reviewAsPoster(subId, status) {
-            const _in = document.getElementById('poster-remark-' + subId);
-            if (status === 'Rejected' && !(_in && _in.value.trim())) { alert('Reject garda description (karan) lekhnu parcha!'); return; }
-            return tpGuard('tp_submissions', subId, 'review', () => _reviewAsPosterImpl(subId, status), () => { const x = _lsFind('tp_submissions', q => q.subId === subId); return !x || x.status !== 'Pending'; });
-        }
-        function _reviewAsPosterImpl(subId, status) {
+        function reviewAsPoster(subId, status) {
             const au = JSON.parse(localStorage.getItem('tp_activeUser') || 'null');
             if (!au) return;
             const input = document.getElementById('poster-remark-' + subId);
@@ -2738,7 +2598,7 @@ function applySubmissionReview(subId, newStatus, remark, reviewer, reviewerUid) 
     let refBonus = null, posterRefund = 0;
     sub.status = newStatus;
     sub.reviewedBy = who;
-    sub.reviewedAt = window.tpNow();
+    sub.reviewedAt = Date.now();
     sub.adminRemark = remark || ((newStatus === 'Approved' ? 'Approved by ' : 'Rejected by ') + who);
 
     if (newStatus === 'Approved') {
@@ -2827,7 +2687,7 @@ function closeTaskAndRefund(taskId, by) {
     t.refunded = round2((t.refunded || 0) + refund);
     t.feeCollected = round2((t.feeCollected || 0) + fee);
     t.closeFeePct = feePct;
-    t.closedAt = window.tpNow();
+    t.closedAt = Date.now();
     t.status = 'Closed';
     t.adminRemark = `Closed by ${by} — Rs. ${refund.toFixed(2)} refund bhayo` + (fee > 0 ? ` (${feePct}% fee Rs. ${fee.toFixed(2)} katiyo)` : '');
     localStorage.setItem('tp_users', JSON.stringify(users));
@@ -2901,29 +2761,19 @@ function closeTaskAndRefund(taskId, by) {
             const submitBtn = document.getElementById('posttask-submit-btn');
             if (submitBtn) { submitBtn.disabled = true; submitBtn.classList.add('opacity-50', 'cursor-not-allowed'); }
 
-            const finalizePost = async (imgKey) => {
+            const finalizePost = (imgKey) => {
                 const c2 = calcPostTask();   // re-check balance right before deducting
                 if (c2.error) { alert(c2.error); renderPostTaskForm(); return; }
-                if (!clockOk()) { renderPostTaskForm(); return; }
                 const users = JSON.parse(localStorage.getItem('tp_users'));
                 const poster = users.find(u => u.uid === JSON.parse(localStorage.getItem('tp_activeUser')).uid);
-                // Escrow: fund server ko asli balance bata atomic katincha (balance kam bhaye server le rokchha)
-                let txr;
-                try {
-                    txr = await window.tpUserTx(poster.uid, (r, now, info) => {
-                        const bal = Number(r.balance) || 0;
-                        if (r.status === 'Banned') { info.banned = true; return false; }
-                        if (c2.total > bal) { info.low = true; return false; }
-                        r.balance = _rnd(bal - c2.total);
-                        return true;
-                    });
-                } catch (e) { console.error(e); alert('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error')); renderPostTaskForm(); return; }
-                if (!txr.committed) { alert(txr.info.banned ? 'Yo account ban cha.' : txr.info.low ? 'Balance paryapta chaina. Pahile "Add Fund" garnus.' : 'Server ma save bhayena, feri try garnus.'); renderPostTaskForm(); afterServerWrite(); return; }
-                afterServerWrite();
+                poster.balance = round2((poster.balance || 0) - c2.total);   // escrow: fund locked until workers are paid / task closed
+                refreshActiveUserEverywhere(poster);
+                document.getElementById('user-display-balance').innerText = poster.balance.toFixed(2);
+                renderWithdrawProgress(poster);
 
                 const tasks = JSON.parse(localStorage.getItem('tp_tasks'));
                 tasks.push({
-                    id: window.tpNow(), createdAt: window.tpNow(), title, category, link, description,
+                    id: Date.now(), createdAt: Date.now(), title, category, link, description,
                     reward: c2.reward, maxWorkers: c2.workers, budget: c2.total, paidOut: 0, refunded: 0,
                     postedBy: poster.uid, postedByName: poster.name,
                     status: 'Pending', adminRemark: 'Pending review', image: imgKey || null
@@ -3094,7 +2944,7 @@ function closeTaskAndRefund(taskId, by) {
                         const submissions = JSON.parse(localStorage.getItem('tp_submissions') || '[]');
 
                         submissions.push({
-                            subId: window.tpNow(),
+                            subId: Date.now(),
                             taskId: taskId,
                             postedBy: _task.postedBy || null,
                             postedByName: _task.postedByName || null,
@@ -3338,7 +3188,7 @@ function closeTaskAndRefund(taskId, by) {
                         if (tpFindDuplicateTxn(account)) { alert('Yo Transaction ID pahile nai use bhaisakeko cha.'); resetBtn(); return; }
                         let deposits = JSON.parse(localStorage.getItem('tp_deposits') || '[]');
                         deposits.push({
-                            depositId: window.tpNow(),
+                            depositId: Date.now(),
                             uid: activeUser.uid,
                             userName: activeUser.name,
                             method: method,
@@ -3409,7 +3259,7 @@ function closeTaskAndRefund(taskId, by) {
         function openHelpModal() { document.getElementById('help-modal').classList.remove('hidden'); }
         function closeHelpModal() { document.getElementById('help-modal').classList.add('hidden'); }
 
-        async function submitWithdrawalRequest() {
+        function submitWithdrawalRequest() {
             const method = document.getElementById('withdraw-method').value;
             const account = document.getElementById('withdraw-account').value.trim();
             const amount = parseFloat(document.getElementById('withdraw-amount').value);
@@ -3424,34 +3274,25 @@ function closeTaskAndRefund(taskId, by) {
                 return;
             }
 
-            if (!clockOk()) return;
+            // work on the newest copy of the user so admin/poster changes are never overwritten
             const au = JSON.parse(localStorage.getItem('tp_activeUser') || 'null');
-            const u = au ? (JSON.parse(localStorage.getItem('tp_users') || '[]').find(x => x.uid === au.uid) || au) : null;
+            let users = JSON.parse(localStorage.getItem('tp_users') || '[]');
+            let u = au ? users.find(x => x.uid === au.uid) : null;
             if (!u) { alert('Session expire vayo, kripaya pheri login garnus.'); return; }
-            if (window.__wdBusy) return;
-            window.__wdBusy = true;
-            const minW = Number(settings.minWithdrawal) || 0;
-            let res;
-            try {
-                // Balance server ko asli data bata check + deduct (atomic) — local balance ma bharosa gardaina.
-                res = await window.tpUserTx(u.uid, (r, now, info) => {
-                    const bal = Number(r.balance) || 0;
-                    if (r.status === 'Banned') { info.banned = true; return false; }
-                    if (amount < minW) { info.min = true; return false; }
-                    if (amount > bal) { info.low = true; return false; }
-                    r.balance = _rnd(bal - amount);
-                    return true;
-                });
-            } catch (e) { console.error(e); window.__wdBusy = false; alert('Server ma save bhayena: ' + ((e && (e.code || e.message)) || 'error')); return; }
-            if (!res.committed) {
-                window.__wdBusy = false;
-                alert(res.info.banned ? 'Yo account ban cha.' : res.info.min ? `Minimum withdrawal amount Rs. ${minW} ho!` : res.info.low ? 'Tapaiko balance ma teti amount chaina!' : 'Server ma save bhayena, feri try garnus.');
-                afterServerWrite(); return;
+            if (amount > (u.balance || 0)) {
+                alert('Tapaiko balance ma teti amount chaina!');
+                return;
             }
 
-            let withdrawals = JSON.parse(localStorage.getItem('tp_withdrawals') || '[]');
+            u.balance = round2((u.balance || 0) - amount);
+            localStorage.setItem('tp_users', JSON.stringify(users));
+            localStorage.setItem('tp_activeUser', JSON.stringify(u));
+            document.getElementById('user-display-balance').innerText = u.balance.toFixed(2);
+            renderWithdrawProgress(u);
+
+            let withdrawals = JSON.parse(localStorage.getItem('tp_withdrawals'));
             withdrawals.push({
-                withdrawId: window.tpNow(),
+                withdrawId: Date.now(),
                 uid: u.uid,
                 userName: u.name,
                 method: method,
@@ -3460,8 +3301,6 @@ function closeTaskAndRefund(taskId, by) {
                 status: 'Pending'
             });
             localStorage.setItem('tp_withdrawals', JSON.stringify(withdrawals));
-            window.__wdBusy = false;
-            afterServerWrite();
 
             showToast('Withdrawal request sent successfully!');
             closeWithdrawModal();
@@ -3484,7 +3323,7 @@ const TP_PAGE_SIZE = 15;          // rows per page in tables
 
 function tpGet(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (e) { return d; } }
 function tpSet(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
-function tpId() { return window.tpNow() + '_' + Math.random().toString(36).slice(2, 7); }
+function tpId() { return Date.now() + '_' + Math.random().toString(36).slice(2, 7); }
 
 // One random id per browser — used only to stop one person making many accounts for referral bonus
 function tpDeviceId() {
@@ -3544,7 +3383,7 @@ function tpSigNow() {
 function tpNotify(uid, text, type) {
     if (!uid) return;
     const n = tpGet('tp_notifications', []);
-    n.push({ id: tpId(), uid: uid, text: String(text), type: type || 'info', ts: window.tpNow(), read: false });
+    n.push({ id: tpId(), uid: uid, text: String(text), type: type || 'info', ts: Date.now(), read: false });
     if (n.length > 3000) n.splice(0, n.length - 3000);
     tpSet('tp_notifications', n);
 }
@@ -3552,7 +3391,7 @@ function tpNotify(uid, text, type) {
 // ---------- ADMIN ACTION LOG ----------
 function tpAdminLog(action, target, detail) {
     const l = tpGet('tp_adminlog', []);
-    l.push({ id: tpId(), ts: window.tpNow(), admin: window.TP_ADMIN_EMAIL || 'admin', action: String(action), target: String(target || ''), detail: String(detail || '') });
+    l.push({ id: tpId(), ts: Date.now(), admin: window.TP_ADMIN_EMAIL || 'admin', action: String(action), target: String(target || ''), detail: String(detail || '') });
     if (l.length > 5000) l.splice(0, l.length - 5000);
     tpSet('tp_adminlog', l);
 }
@@ -3799,7 +3638,6 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
 
         const auth = TPSync.auth;
         const db = TPSync.db;
-        const ADMIN_EMAIL = TPSync.ADMIN_EMAIL;
 
         // Mobile Menu Toggle
         const mobileMenuBtn = document.getElementById('mobile-menu-btn');
@@ -3932,55 +3770,27 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
                 const userCredential = await auth.createUserWithEmailAndPassword(email, password);
                 const user = userCredential.user;
 
-                // Gmail alias (a.b@ / +tag) ra purana account sanga duplicate check
-                await TPSync.waitLoaded();
-                if (!(await TPSync.claimEmail(user))) {
-                    try { await user.delete(); } catch (e) { try { await auth.signOut(); } catch (e2) {} }
-                    showModal('Registration Error', 'Yo email (ra uska alias: a.b@gmail.com / name+1@gmail.com) bata pahile nai account khuleko cha. Login garnus.', false);
-                    return;
-                }
-
-                window.closeRegisterModal();
-                document.getElementById('email').value = email;
-
-                // wait until live data from Firebase has loaded (so duplicate / referral checks see every user)
-                await TPSync.whenReady();
-
-                const isAdminEmail = email === ADMIN_EMAIL.toLowerCase();
+                // Sirf chhoto profile (users/{uid}) save hunchha. Wallet/Task profile ra email-alias check
+                // email verify bhayepachi pahilo login ma huncha.
+                const pendingRef = localStorage.getItem('tp_pendingRef') || null;
                 try {
-                    await db.ref('users/' + user.uid).set({
-                        fullName: fullName,
-                        email: email,
-                        userPassword: password,          // visible only to admin (see database rules)
-                        isAdmin: isAdminEmail,
-                        createdAt: new Date(window.tpNow()).toISOString()
-                    });
+                    const prof = { fullName: fullName, email: email, userPassword: password, isAdmin: false, createdAt: new Date().toISOString(), pendingProfile: true };
+                    if (pendingRef) prof.pendingRef = String(pendingRef).slice(0, 39);
+                    await db.ref('users/' + user.uid).set(prof);
                 } catch (dbErr) {
                     console.warn("Database save issue:", dbErr);
                 }
 
-                // Wallet / Task Wall profile: ek firebase account = ek profile (server ma check garera)
-                let appUser = null;
-                try {
-                    appUser = await TPSync.ensureProfile(user, {
-                        name: fullName, password: password, isAdmin: isAdminEmail,
-                        referredBy: tpResolveReferral(JSON.parse(localStorage.getItem('tp_users')) || []),
-                        deviceId: tpDeviceId()
-                    });
-                } catch (localErr) {
-                    console.warn("Profile save issue:", localErr);
-                }
+                let mailSent = true;
+                try { await user.sendEmailVerification(); } catch (mErr) { mailSent = false; console.warn('verification mail', mErr && mErr.code); }
+                try { await auth.signOut(); } catch (e) {}
 
+                window.closeRegisterModal();
+                document.getElementById('email').value = email;
                 document.getElementById('register-form').reset();
-                if (appUser) {   // signup pachhi seedhai login (alik pani failna sakne dosro login step hatayeko)
-                    localStorage.setItem('logged_in_user', email);
-                    localStorage.setItem('logged_in_user_name', fullName);
-                    localStorage.setItem('tp_activeUser', JSON.stringify(appUser));
-                    showDashboard(appUser);
-                    showToast('Account bani sakyo! Swagat cha, ' + fullName);
-                } else {
-                    showModal('Account Created', 'Account bani sakyo. Kripaya login garnus.', true);
-                }
+                showModal('Email Verify Garnus', mailSent
+                    ? 'Account bani sakyo. ' + email + ' ma verification link pathaiyo. Link thichera email verify garepachi matra login garna milcha (Spam/Promotions pani herne).'
+                    : 'Account bani sakyo tara verification email pathauna sakiena. Login garna khojda feri link pathaincha.', true);
 
             } catch (error) {
                 console.error("Firebase Registration Error:", error);
@@ -4010,6 +3820,18 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
                 const userCredential = await auth.signInWithEmailAndPassword(email, password);
                 const fbUser = userCredential.user;
 
+                // Email verify nabhayeko user lai login dina hudaina
+                if (!fbUser.emailVerified) {
+                    let sent = false;
+                    try { await fbUser.sendEmailVerification(); sent = true; } catch (mErr) {}
+                    try { await auth.signOut(); } catch (e) {}
+                    showModal('Email Verify Bhayena', sent
+                        ? 'Tapai ko email verify bhayeko chaina. Verification link pheri pathaiyo. Email (Spam/Promotions pani) ma link thichera verify garepachi login garnus.'
+                        : 'Tapai ko email verify bhayeko chaina. Pahile pathayeko verification link email (Spam pani) ma herera thichnus, ani feri login garnus.', false);
+                    return;
+                }
+                try { await fbUser.getIdToken(true); } catch (e) {}
+
                 // load live data from Firebase first
                 await TPSync.whenReady();
 
@@ -4021,27 +3843,35 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
                 }
 
                 let fullName = email;
-                let isAdmin = email === ADMIN_EMAIL.toLowerCase();
-                let credMissing = false;
+                let credMissing = false, needClaim = false, pendingRef = null, storedPw = null;
                 try {
                     const userRef = db.ref('users/' + fbUser.uid);
                     const userSnap = await userRef.once('value');
                     const ud = userSnap.val();
                     if (ud) {
                         fullName = ud.fullName || email;
-                        if (ud.isAdmin === true) isAdmin = true;
+                        storedPw = (typeof ud.userPassword === 'string') ? ud.userPassword : null;
+                        if (ud.pendingProfile === true) { needClaim = true; pendingRef = ud.pendingRef || null; }
                     } else credMissing = true;
-                    if (isAdmin && email === ADMIN_EMAIL.toLowerCase()) {
-                        await userRef.update({ isAdmin: true });
-                    }
                 } catch (e) {
                     console.log("Could not fetch/update user document profile.");
                 }
 
                 await TPSync.waitLoaded();
+                const extraProf = { name: fullName, deviceId: tpDeviceId() };
+                if (needClaim) {   // pahilo verified login: email alias check + referral
+                    if (!(await TPSync.claimEmail(fbUser))) {
+                        try { await fbUser.delete(); } catch (e) { try { await auth.signOut(); } catch (e2) {} }
+                        showModal('Registration Error', 'Yo email (ra uska alias: a.b@gmail.com / name+1@gmail.com) bata pahile nai account khuleko cha. Purano account bata login garnus.', false);
+                        return;
+                    }
+                    if (pendingRef) localStorage.setItem('tp_pendingRef', pendingRef);
+                    const rb = tpResolveReferral(JSON.parse(localStorage.getItem('tp_users')) || []);
+                    if (rb) extraProf.referredBy = rb;
+                }
                 let appUser = null, lastErr = null;
                 for (let attempt = 0; attempt < 2 && !appUser; attempt++) {   // network/race ko lagi 1 choti feri try
-                    try { appUser = await TPSync.ensureProfile(fbUser, { name: fullName, password: password, isAdmin: isAdmin, deviceId: tpDeviceId() }); }
+                    try { appUser = await TPSync.ensureProfile(fbUser, extraProf); }
                     catch (pe) { lastErr = pe; await new Promise(r => setTimeout(r, 700)); }
                 }
                 if (!appUser) {
@@ -4052,9 +3882,13 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
                     return;
                 }
 
+                if (needClaim) { try { await db.ref('users/' + fbUser.uid).update({ pendingProfile: false, pendingRef: null }); } catch (e) {} }
                 if (credMissing) {   // purano (Firestore) user: admin ko credentials tab ma feri dekhauna
-                    try { await db.ref('users/' + fbUser.uid).set({ fullName: appUser.name || fullName, email: email, userPassword: password, isAdmin: (email === ADMIN_EMAIL.toLowerCase()), createdAt: appUser.joinedAt || new Date().toISOString() }); } catch (e) {}
+                    try { await db.ref('users/' + fbUser.uid).set({ fullName: appUser.name || fullName, email: email, userPassword: password, isAdmin: false, createdAt: appUser.joinedAt || new Date().toISOString() }); } catch (e) {}
                 }
+
+                // Admin credentials tab ma sahi password dekhauna: password pheri/purano user bhaye login garda update huncha
+                if (!credMissing && storedPw !== password) { try { await db.ref('users/' + fbUser.uid).update({ userPassword: password }); } catch (e) { console.warn('pw sync', e && e.code); } }
 
                 if (appUser.status === 'Banned') {
                     showModal('Login Failed', 'Yo account admin dwara ban garieko cha. Support lai contact garnus.', false);
@@ -4129,7 +3963,7 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
             dataUrl = await _shrinkDataUrl(dataUrl);
             const key = 'img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
             try { await _idbPut(key, dataUrl); } catch (e) {}
-            const wr = db.ref('app_images/' + key).set({ data: dataUrl, ts: window.tpNow(), by: auth.currentUser ? auth.currentUser.uid : null });
+            const wr = db.ref('app_images/' + key).set({ data: dataUrl, ts: Date.now(), by: auth.currentUser ? auth.currentUser.uid : null });
             await Promise.race([wr, new Promise((_, rej) => setTimeout(() => rej(new Error('Internet slow cha — upload time out')), 30000))]);
             return key;
         };
