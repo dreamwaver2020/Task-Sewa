@@ -141,7 +141,10 @@
     },
     signOut: async function () {
       if (PAGE === 'admin') await Promise.all(SHARD_IDS.map(function (id) { return SH[id].auth.signOut(); }));
-      else await SH[ACT].auth.signOut();
+      else {
+        await Promise.all(SHARD_IDS.filter(function (x) { return x !== ACT; }).map(function (x) { var u = SH[x].auth.currentUser; return u && u.isAnonymous ? SH[x].auth.signOut().catch(function () {}) : null; }));
+        await SH[ACT].auth.signOut();
+      }
     }
   };
   function mk(kind) {
@@ -155,7 +158,19 @@
   var SV = firebase.database.ServerValue;
   function liveShards() { return PAGE === 'admin' ? SHARD_IDS.filter(function (id) { return SH[id].auth.currentUser; }) : [ACT]; }
   function route(lsKey, id, e) {
-    if (PAGE !== 'admin') return [ACT];
+    if (PAGE !== 'admin') {
+      if (!S.xs.length) return [ACT];                         // cross-shard off => purano behaviour (afno shard matra)
+      var okS = function (x) { return x === ACT || S.xs.indexOf(x) > -1; };
+      if (lsKey === 'tp_tasks') {                              // task jun jun shard ma cha tyasai sabai ma update
+        var si0 = S.seenIn['tp_tasks|' + id], l0 = si0 ? Object.keys(si0).filter(okS) : [];
+        return l0.length ? l0 : [ACT];
+      }
+      var w0 = S.where[lsKey + '|' + id]; if (w0 && okS(w0)) return [w0];
+      var tu = null;
+      if (lsKey === 'tp_submissions' && e && e.postedBy != null) tu = S.where['tp_users|' + idStr(e.postedBy)];   // naya proof => task poster ko shard ma
+      else if (lsKey === 'tp_notifications' && e && e.uid != null) tu = S.where['tp_users|' + idStr(e.uid)];       // notification => paune user ko shard ma
+      return [tu && okS(tu) ? tu : ACT];
+    }
     if (lsKey === 'tp_tasks') return liveShards();
     var w = S.where[lsKey + '|' + id]; if (w) return [w];
     var u = e && e.uid != null ? S.where['tp_users|' + idStr(e.uid)] : null;
@@ -198,7 +213,7 @@
     unsubs: [], scoped: false, sawMine: false, removed: false, delPromise: null,
     legacy: new Map(), firstRender: false, bulk: false, live: null, lastWerr: 0,
     sched: {}, pw: 0, verifying: false, lastVerify: 0,
-    where: {}, seenIn: {}, legacyBy: {}, shErr: {}
+    where: {}, seenIn: {}, legacyBy: {}, shErr: {}, xs: [], xwarned: false
   };
 
   // Realtime Database key ma  . $ # [ ] /  hudaina
@@ -585,7 +600,7 @@
     S.unsubs.splice(0).forEach(function (u) { try { u(); } catch (e) {} });
     Object.keys(S.sched).forEach(function (k) { clearTimeout(S.sched[k]); }); S.sched = {};
     S.tracked = {}; S.remote = {}; S.settingsRemote = null; S.pushed = {}; S.ready = false; S.pending = 0; S.defer = {};
-    S.scoped = false; S.sawMine = false; S.legacy = new Map(); S.where = {}; S.seenIn = {}; S.legacyBy = {};
+    S.scoped = false; S.sawMine = false; S.legacy = new Map(); S.where = {}; S.seenIn = {}; S.legacyBy = {}; S.xs = [];
   }
   function wipeLocal() {
     Object.keys(COLS).forEach(function (k) { RAW_SET.call(localStorage, k, '[]'); });
@@ -605,6 +620,31 @@
       if (PAGE === 'admin' && !S.isAdmin) return;
       begin();
     });
+  }
+  // ---------- CROSS-SHARD (user page): arko shard ko tasks / proofs / users pani padhne-lekhne ----------
+  // Arko Firebase project ma user login hudaina, tesaile Anonymous login prayog huncha (Console > Authentication > Anonymous ON garnu parcha).
+  function authReady(a) { return new Promise(function (res) { var off = a.onAuthStateChanged(function (u) { try { off(); } catch (e) {} res(u); }); }); }
+  async function openXShards() {
+    var ok = [];
+    await Promise.all(SHARD_IDS.filter(function (x) { return x !== ACT; }).map(async function (id) {
+      try {
+        var a = SH[id].auth;
+        var cu = await Promise.race([authReady(a), new Promise(function (r) { setTimeout(function () { r(null); }, 5000); })]);
+        if (!cu && !a.currentUser) await Promise.race([a.signInAnonymously(), new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 8000); })]);
+        if (a.currentUser) { ok.push(id); delete S.shErr[id]; }
+      } catch (e) {
+        S.shErr[id] = 'anonymous login: ' + ((e && (e.code || e.message)) || e);
+        console.warn('cross-shard login fail ' + id, (e && e.code) || e);
+        if (!S.xwarned) { S.xwarned = true; toast('Arko shard (' + id + ') sanga connect bhayena — Firebase Console > Authentication ma Anonymous login ON garnus.'); }
+      }
+    }));
+    return ok;
+  }
+  function listenX(sh) {
+    var d = SH[sh].db;
+    listen('tp_tasks', d.ref('app_tasks'), sh);
+    listen('tp_submissions', d.ref('app_submissions'), sh);
+    listen('tp_users', d.ref('app_users'), sh);
   }
   function begin() {
     S.pending = 1;                                   // guard so we don't resolve early
@@ -628,6 +668,13 @@
       var th = tr.on('value', function (d) { if (d.exists()) onAccountRemoved(); }, function () {});
       S.unsubs.push(function () { try { tr.off('value', th); } catch (e) {} });
     }
+    if (PAGE !== 'admin' && SHARD_IDS.length > 1) {   // arko shard ko data pani (task wall / proof / users)
+      var _xu = S.fuid; S.pending++;
+      openXShards().then(function (ids) {
+        if (S.fuid !== _xu) return;
+        ids.forEach(function (sh) { if (S.xs.indexOf(sh) < 0) S.xs.push(sh); listenX(sh); });
+      }).catch(function (e) { console.warn('cross-shard', e); }).then(function () { if (S.fuid === _xu) srcDone(); });
+    }
     srcDone();                                       // release guard
     setTimeout(function () { if (!S.ready) { S.pending = 0; S.ready = true; replay(); S.readyResolvers.splice(0).forEach(function (r) { r(); }); fire(); } }, 12000);
   }
@@ -641,6 +688,7 @@
   }
   SHARD_IDS.forEach(function (id) {
     SH[id].auth.onAuthStateChanged(function (u) {
+      if (u && u.isAnonymous) return;                 // cross-shard anonymous session — asli login hoina
       if (u) { if (PAGE !== 'admin' && ACT !== id) setActive(id); onAuthUser(u); }
       else if ((PAGE === 'admin' ? SHARD_IDS[0] : ACT) === id) onAuthUser(null);
     });
@@ -742,6 +790,7 @@
   window.TPSync = {
     auth: auth, db: db, SH: SH, SHARD_IDS: SHARD_IDS, activeShard: function () { return ACT; },
     dbFor: function (lsKey, id) { return dbOf(lsKey, id); },
+    xDbs: function () { return S.xs.map(function (id) { return SH[id].db; }); },   // arko shard ko db (images ko lagi)
     isAdminEmail: isAdminEmail, REQUIRE_VERIFIED: REQUIRE_VERIFIED, SV: SV, idStr: idStr,
     normEmail: normEmail, waitLoaded: waitLoaded, claimEmail: claimEmail, ensureProfile: ensureProfile,
     whenReady: whenReady,
@@ -3966,6 +4015,8 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
             try { await _idbPut(key, dataUrl); } catch (e) {}
             const wr = db.ref('app_images/' + key).set({ data: dataUrl, ts: Date.now(), by: auth.currentUser ? auth.currentUser.uid : null });
             await Promise.race([wr, new Promise((_, rej) => setTimeout(() => rej(new Error('Internet slow cha — upload time out')), 30000))]);
+            // arko shard ma pani copy (cross-shard poster / admin le herna sakun) — fail bhaye pani upload fail hudaina
+            try { TPSync.xDbs().forEach(xd => { xd.ref('app_images/' + key).set({ data: dataUrl, ts: Date.now(), by: null }).catch(() => {}); }); } catch (e) {}
             return key;
         };
         window.getImageFromDB = async function (key) {
@@ -3975,6 +4026,13 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
                 const d = await db.ref('app_images/' + String(key)).once('value');
                 if (d.exists()) { const v = d.val().data; _idbPut(key, v).catch(() => {}); return v; }
             } catch (e) { console.warn('image fetch', e); }
+            try {   // afno shard ma chaina bhane arko shard ma khojne
+                const xs = TPSync.xDbs();
+                for (let i = 0; i < xs.length; i++) {
+                    const d2 = await xs[i].ref('app_images/' + String(key)).once('value');
+                    if (d2.exists()) { const v2 = d2.val().data; _idbPut(key, v2).catch(() => {}); return v2; }
+                }
+            } catch (e) { console.warn('image fetch (other shard)', e); }
             return undefined;
         };
 
