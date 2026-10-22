@@ -197,6 +197,8 @@
     tp_submissions:   { col: 'app_submissions',   id: function (e) { return e.subId; },                   sort: function (e) { return num(e.subId); } },
     tp_deposits:      { col: 'app_deposits',      id: function (e) { return e.depositId; },               sort: function (e) { return num(e.depositId); } },
     tp_withdrawals:   { col: 'app_withdrawals',   id: function (e) { return e.withdrawId; },              sort: function (e) { return num(e.withdrawId); } },
+    tp_tickets:       { col: 'app_tickets',       id: function (e) { return e.ticketId; },              sort: function (e) { return num(e.ticketId); } },
+    tp_messages:      { col: 'app_messages',      id: function (e) { return e.msgId; },                 sort: function (e) { return num(e.ts); } },
     tp_notifications: { col: 'app_notifications', id: function (e) { return e.id; },                      sort: function (e) { return num(e.ts); } },
     tp_adminlog:      { col: 'app_adminlog',      id: function (e) { return e.id; },                      sort: function (e) { return num(e.ts); } },
     tp_deleted_users: { col: 'deleted_users',     id: function (e) { return e.firebaseUid || e.uid; },    sort: function (e) { return num(e.deletedAt); } }
@@ -552,6 +554,8 @@
         S.scoped = true;
         listen('tp_withdrawals', db.ref('app_withdrawals').orderByChild('uid').equalTo(me.uid));
         listen('tp_notifications', db.ref('app_notifications').orderByChild('uid').equalTo(me.uid));
+        listen('tp_tickets', db.ref('app_tickets').orderByChild('uid').equalTo(me.uid));
+        listen('tp_messages', db.ref('app_messages').orderByChild('uid').equalTo(me.uid));
       }
     } else if (S.sawMine) {
       confirmRemoval();           // profile garayeko jasto dekhiyo -> pahile verify, seedhai logout/delete haina
@@ -1234,6 +1238,13 @@
                         class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brandDarkPurple focus:bg-white text-gray-800">
                 </div>
 
+                <div class="space-y-1">
+                    <label class="block text-xs font-semibold text-gray-600 uppercase tracking-wider" for="reg-refcode">Referral Code <span class="normal-case font-medium text-gray-400">(optional)</span></label>
+                    <input type="text" id="reg-refcode" placeholder="e.g. UID-1234567" autocomplete="off" maxlength="20"
+                        class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm uppercase focus:outline-none focus:ring-2 focus:ring-brandDarkPurple focus:bg-white text-gray-800">
+                    <p id="reg-refnote" class="hidden text-[11px] text-emerald-600 font-semibold"></p>
+                </div>
+
                 <div class="pt-2">
                     <button type="submit" id="btn-register"
                         class="w-full py-3.5 px-4 bg-brandDarkPurple hover:bg-brandPurple text-white font-semibold rounded-xl shadow-lg transition-all duration-300">
@@ -1302,7 +1313,9 @@
             <nav class="flex-1 overflow-y-auto p-3 space-y-1">
                 <p class="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Dashboard</p>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('tasks')" id="sidebar-link-tasks" class="sidebar-link"><i class="fa-solid fa-list-check w-5 text-center"></i><span>Task Wall</span></a>
-                <a href="javascript:void(0)" onclick="sidebarGoToTab('history')" id="sidebar-link-history" class="sidebar-link"><i class="fa-solid fa-clock-rotate-left w-5 text-center"></i><span>Submissions History</span></a>
+                <a href="javascript:void(0)" onclick="sidebarGoToTab('history')" id="sidebar-link-history" class="sidebar-link"><i class="fa-solid fa-list-check w-5 text-center"></i><span>My Tasks</span></a>
+                <a href="javascript:void(0)" onclick="sidebarGoToTab('notifications')" id="sidebar-link-notifications" class="sidebar-link"><i class="fa-solid fa-bell w-5 text-center"></i><span>Notifications</span><span id="notif-side-badge" class="hidden ml-auto text-[10px] font-black bg-rose-500 text-white rounded-full px-1.5 py-0.5">0</span></a>
+                <a href="javascript:void(0)" onclick="sidebarGoToTab('tickets')" id="sidebar-link-tickets" class="sidebar-link"><i class="fa-solid fa-headset w-5 text-center"></i><span>Support Tickets</span><span id="tk-side-badge" class="hidden ml-auto text-[10px] font-black bg-rose-500 text-white rounded-full px-1.5 py-0.5">0</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('statements')" id="sidebar-link-statements" class="sidebar-link"><i class="fa-solid fa-receipt w-5 text-center"></i><span>Payment Statements</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('referrals')" id="sidebar-link-referrals" class="sidebar-link"><i class="fa-solid fa-user-group w-5 text-center"></i><span>My Referrals</span></a>
                 <a href="javascript:void(0)" onclick="sidebarGoToTab('leaderboard')" id="sidebar-link-leaderboard" class="hidden sidebar-link"><i class="fa-solid fa-trophy w-5 text-center"></i><span>Leaderboard</span></a>
@@ -1314,6 +1327,7 @@
                 <a href="javascript:void(0)" onclick="sidebarRunAction('openWithdrawModal')" class="sidebar-link"><i class="fa-solid fa-money-bill-transfer w-5 text-center"></i><span>Withdraw</span></a>
                 <a href="javascript:void(0)" onclick="sidebarRunAction('claimDailyBonus')" class="sidebar-link"><i class="fa-solid fa-gift w-5 text-center"></i><span>Daily Bonus</span></a>
                 <a href="javascript:void(0)" onclick="sidebarScrollTo('spin-btn')" class="sidebar-link"><i class="fa-solid fa-dharmachakra w-5 text-center"></i><span>Daily Spin</span></a>
+                <a href="javascript:void(0)" onclick="sidebarGoToTab('timewall')" id="sidebar-link-timewall" class="sidebar-link"><i class="fa-solid fa-hourglass-half w-5 text-center"></i><span>Timewall</span><span class="ml-auto text-[9px] font-black bg-emerald-500 text-white px-1.5 py-0.5 rounded-full">NEW</span></a>
                 <!-- Add new services here, e.g.:
                 <a href="javascript:void(0)" onclick="sidebarRunAction('yourFunctionName')" class="sidebar-link"><i class="fa-solid fa-star w-5 text-center"></i><span>New Service</span></a>
                 -->
@@ -1427,6 +1441,24 @@
                     <div id="site-info-body" class="space-y-4"></div>
                 </div>
 
+                <!-- Level, Daily Missions & Badges -->
+                <div id="progress-hub" class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                    <div class="md:col-span-2 bg-slate-800 p-6 rounded-3xl border border-slate-700/60 shadow-xl space-y-3">
+                        <div class="flex items-center gap-2"><i class="fa-solid fa-bolt text-amber-400"></i><h3 class="font-bold text-slate-200">Level &amp; Daily Missions</h3></div>
+                        <div class="flex justify-between text-xs font-bold text-slate-300"><span id="lvl-now">Bronze</span><span id="lvl-next" class="text-slate-400">Silver</span></div>
+                        <div class="h-2.5 bg-slate-900 rounded-full overflow-hidden"><div id="lvl-bar" class="h-full bg-gradient-to-r from-amber-400 to-pink-500 rounded-full transition-all duration-700" style="width:0%"></div></div>
+                        <p id="lvl-hint" class="text-[11px] text-slate-400"></p>
+                        <div class="flex justify-between items-center pt-1"><h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">Aajaka missions</h4><span id="mission-count" class="text-[11px] font-bold text-emerald-400">0/4</span></div>
+                        <ul id="mission-list" class="space-y-2"></ul>
+                    </div>
+                    <div class="md:col-span-3 bg-slate-800 p-6 rounded-3xl border border-slate-700/60 shadow-xl space-y-3">
+                        <div class="flex justify-between items-center"><div class="flex items-center gap-2"><i class="fa-solid fa-medal text-yellow-400"></i><h3 class="font-bold text-slate-200">Achievements</h3></div><span id="badge-count" class="text-[11px] font-bold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-2.5 py-1 rounded-lg">0/10</span></div>
+                        <div id="badge-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2.5"></div>
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 pt-2">Pichhillo 7 din ko kamai</h4>
+                        <div id="week-chart" class="flex gap-1.5"></div>
+                    </div>
+                </div>
+
                 <!-- Referral + Spin Wheel Row -->
                 <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
                     <!-- Referral Card -->
@@ -1440,6 +1472,14 @@
                             <input type="text" id="referral-link-input" readonly class="flex-grow bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-slate-300 font-mono truncate">
                             <button onclick="copyReferralLink()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 rounded-xl text-xs font-bold transition shadow flex items-center gap-1.5"><i class="fa-solid fa-copy"></i><span class="hidden sm:inline">Copy</span></button>
                         </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-[11px] font-semibold text-slate-400 uppercase">Your code</span>
+                            <button onclick="copyReferralCode()" class="font-mono text-xs font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-lg hover:bg-amber-500/20 transition"><span id="referral-code-text">—</span><i class="fa-solid fa-copy ml-2"></i></button>
+                            <button onclick="shareReferral('wa')" class="text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition"><i class="fa-brands fa-whatsapp mr-1"></i>WhatsApp</button>
+                            <button onclick="shareReferral('fb')" class="text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition"><i class="fa-brands fa-facebook mr-1"></i>Facebook</button>
+                            <button onclick="shareReferral('native')" class="text-xs font-bold bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded-lg transition"><i class="fa-solid fa-share-nodes mr-1"></i>Share</button>
+                        </div>
+                        <p class="text-[11px] text-slate-400">Pending bonus (sathi ko pahilo task approve bhaepachi): <b class="text-amber-300">Rs. <span id="referral-pending-stat">0</span></b></p>
                         <div class="flex gap-6 pt-1">
                             <div><span class="block text-lg font-black text-white" id="referral-count-stat">0</span><span class="text-[11px] text-slate-400 font-semibold uppercase">Referrals</span></div>
                             <div><span class="block text-lg font-black text-emerald-400" id="referral-earnings-stat">0</span><span class="text-[11px] text-slate-400 font-semibold uppercase">Earned (Rs.)</span></div>
@@ -1466,7 +1506,13 @@
                         <i class="fa-solid fa-list-check"></i><span>Task Wall</span>
                     </button>
                     <button onclick="switchUserTab('history')" id="tab-btn-history" class="pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2">
-                        <i class="fa-solid fa-clock-rotate-left"></i><span>Submissions History</span>
+                        <i class="fa-solid fa-list-check"></i><span>My Tasks</span>
+                    </button>
+                    <button onclick="switchUserTab('notifications')" id="tab-btn-notifications" class="pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2">
+                        <i class="fa-solid fa-bell"></i><span>Notifications</span><span id="notif-tab-badge" class="hidden text-[10px] font-black bg-rose-500 text-white rounded-full px-1.5 py-0.5">0</span>
+                    </button>
+                    <button onclick="switchUserTab('tickets')" id="tab-btn-tickets" class="pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2">
+                        <i class="fa-solid fa-headset"></i><span>Support</span><span id="tk-tab-badge" class="hidden text-[10px] font-black bg-rose-500 text-white rounded-full px-1.5 py-0.5">0</span>
                     </button>
                     <button onclick="switchUserTab('statements')" id="tab-btn-statements" class="pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2">
                         <i class="fa-solid fa-receipt"></i><span>Payment Statements</span>
@@ -1483,6 +1529,9 @@
                     <button onclick="switchUserTab('reviews')" id="tab-btn-reviews" class="pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2">
                         <i class="fa-solid fa-clipboard-check"></i><span>Task Approvals</span><span id="reviews-count-badge" class="hidden bg-fuchsia-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">0</span>
                     </button>
+                    <button onclick="switchUserTab('timewall')" id="tab-btn-timewall" class="pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2">
+                        <i class="fa-solid fa-hourglass-half"></i><span>Timewall</span>
+                    </button>
                 </div>
 
                 <!-- Tab 1: Task Wall -->
@@ -1497,12 +1546,30 @@
                         </div>
                     </div>
                     <div class="flex gap-2 flex-wrap px-1" id="category-filters"></div>
+                    <div class="flex gap-2 flex-wrap px-1">
+                        <div class="relative flex-grow min-w-[180px]"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                            <input id="task-search" type="search" oninput="tpTaskQuery=this.value;loadTaskWall()" placeholder="Task khojnus..." class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-8 pr-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"></div>
+                        <select id="task-sort" onchange="tpTaskSort=this.value;loadTaskWall()" class="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                            <option value="">Default order</option><option value="high">Highest reward</option><option value="low">Lowest reward</option><option value="new">Newest first</option>
+                        </select>
+                    </div>
                     <div id="task-wall-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
                 </div>
 
-                <!-- Tab 2: Submissions History -->
+                <!-- Notifications menu -->
+                <div id="user-tab-notifications" class="hidden space-y-4">
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3 px-1">
+                        <h3 class="font-bold text-lg text-slate-200"><i class="fa-solid fa-bell text-amber-400 mr-2"></i>Notifications</h3>
+                        <button onclick="tpMarkAllRead()" class="text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-1.5 rounded-xl transition w-fit"><i class="fa-solid fa-check-double mr-1.5"></i>Sabai read garnus</button>
+                    </div>
+                    <div id="notif-tab-chips" class="flex gap-2 flex-wrap px-1"></div>
+                    <div id="notif-tab-list" class="bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 overflow-hidden max-w-4xl"></div>
+                </div>
+
+                <!-- Tab 2: My Tasks (status board) -->
                 <div id="user-tab-history" class="hidden space-y-4">
-                    <h3 class="font-bold text-lg text-slate-200 px-1">Task Submission Status &amp; Remarks</h3>
+                    <h3 class="font-bold text-lg text-slate-200 px-1">My Tasks — Progress, Pending &amp; Completed</h3>
+                    <div id="mytasks-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
                     <div class="bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 overflow-hidden">
                         <div class="overflow-x-auto">
                             <table class="w-full text-left border-collapse text-sm">
@@ -1516,6 +1583,46 @@
                                 </thead>
                                 <tbody id="user-submissions-tbody"></tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab: Support Tickets (user <-> admin, live via Firebase) -->
+                <div id="user-tab-tickets" class="hidden space-y-4">
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3 px-1">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-200">Support Tickets</h3>
+                            <p class="text-xs text-slate-400">Tapai ko problem ya sawal ticket ma lekhnus. Admin ko reply yahi live aaucha (notification pani aaucha).</p>
+                        </div>
+                        <button onclick="tkOpenNew()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl transition shadow-lg flex items-center gap-2 w-fit"><i class="fa-solid fa-plus"></i><span>New Ticket</span></button>
+                    </div>
+
+                    <div id="tk-new-box" class="hidden bg-slate-800 rounded-2xl border border-slate-700/60 shadow-xl p-5 space-y-3">
+                        <h4 class="font-bold text-sm text-slate-200">Naya Ticket</h4>
+                        <div class="grid sm:grid-cols-3 gap-3">
+                            <select id="tk-new-cat" class="px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <option>Withdraw / Payment</option><option>Add Fund</option><option>Task / Proof</option><option>Account / Login</option><option>Referral / Bonus</option><option>Other</option>
+                            </select>
+                            <input id="tk-new-subject" maxlength="120" placeholder="Subject (chhoto ma)" class="sm:col-span-2 px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <textarea id="tk-new-text" rows="4" maxlength="1500" placeholder="Tapai ko problem detail ma lekhnus..." class="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        <div class="flex gap-2">
+                            <button onclick="tkCreate()" class="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-extrabold text-xs px-5 py-2.5 rounded-xl transition flex items-center gap-2"><i class="fa-solid fa-paper-plane"></i>Send Ticket</button>
+                            <button onclick="tkCloseNew()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-xs px-4 py-2.5 rounded-xl transition">Cancel</button>
+                        </div>
+                    </div>
+
+                    <div class="grid lg:grid-cols-5 gap-4">
+                        <div id="tk-list-wrap" class="lg:col-span-2 bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 overflow-hidden">
+                            <div id="tk-list" class="max-h-[60vh] overflow-y-auto"></div>
+                        </div>
+                        <div id="tk-thread-wrap" class="hidden lg:flex lg:col-span-3 bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 overflow-hidden flex-col min-h-[320px]">
+                            <div id="tk-thread-head" class="px-4 py-3 border-b border-slate-700/60 flex items-center gap-3"></div>
+                            <div id="tk-thread" class="flex-1 overflow-y-auto p-4 space-y-3 h-[46vh] bg-slate-900/40"></div>
+                            <div id="tk-reply-box" class="p-3 border-t border-slate-700/60 flex gap-2 items-end">
+                                <textarea id="tk-reply" rows="2" maxlength="1500" placeholder="Reply lekhnus..." class="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"></textarea>
+                                <button onclick="tkSend()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs px-4 py-3 rounded-xl transition flex items-center gap-2"><i class="fa-solid fa-paper-plane"></i><span class="hidden sm:inline">Send</span></button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1618,6 +1725,47 @@
                                     <th class="p-4 font-bold">Worker</th><th class="p-4 font-bold">Task</th><th class="p-4 font-bold">Status</th><th class="p-4 font-bold">Remark</th>
                                 </tr></thead>
                                 <tbody id="my-reviewed-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 8: Timewall Offerwall -->
+                <div id="user-tab-timewall" class="hidden space-y-4">
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3 px-1">
+                        <h3 class="font-bold text-lg text-slate-200"><i class="fa-solid fa-hourglass-half text-amber-400 mr-2"></i>Timewall Offerwall</h3>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-xl w-fit">Timewall Earned: Rs. <span id="timewall-total">0.00</span></span>
+                            <button onclick="openTimewallNewTab()" id="timewall-newtab-btn" class="hidden items-center gap-1.5 text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-1.5 rounded-xl transition">
+                                <i class="fa-solid fa-up-right-from-square"></i><span>Open in new tab</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs px-4 py-3 rounded-xl flex items-start gap-2.5 max-w-4xl">
+                        <i class="fa-solid fa-circle-info mt-0.5"></i>
+                        <span>Offer / task complete garepachi Timewall le confirm garesi tapaiko balance ma Rs. automatic add huncha (kahile kahi keti samaya lagna sakcha). Chargeback / fraud bhayema tyo amount balance bata katincha.</span>
+                    </div>
+                    <div id="timewall-unconfigured" class="hidden bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 p-8 text-center max-w-4xl">
+                        <div class="text-3xl mb-2">⏳</div>
+                        <p class="font-bold text-slate-200">Timewall tayari hudai cha</p>
+                        <p class="text-xs text-slate-400 mt-1">Yo feature chhittai launch huncha. Tab samma Task Wall bata kamaunus.</p>
+                    </div>
+                    <div id="timewall-help" class="hidden bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs px-4 py-3 rounded-xl flex flex-col sm:flex-row sm:items-center gap-3 max-w-4xl">
+                        <span class="flex-grow"><i class="fa-solid fa-triangle-exclamation mr-1.5"></i>Offerwall khali dekhiyo ya khulena? Timewall le Placement approve nagarunjel offers dekhaudaina, ra kehi browser le iframe block garcha. Naya tab ma kholera herna sakinchha.</span>
+                        <span class="flex gap-2 shrink-0"><button onclick="openTimewallNewTab()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1.5 rounded-lg transition">Open in new tab</button><button onclick="tpTimewallLoad()" class="bg-slate-700 hover:bg-slate-600 text-white font-bold px-3 py-1.5 rounded-lg transition">Reload</button></span>
+                    </div>
+                    <div id="timewall-frame-wrap" class="hidden relative bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 overflow-hidden">
+                        <div id="timewall-loading" class="hidden absolute inset-0 z-10 bg-slate-800 flex flex-col items-center justify-center gap-3 text-slate-300 text-sm"><i class="fa-solid fa-spinner fa-spin text-2xl text-indigo-400"></i><span>Timewall load hudai cha...</span></div>
+                        <iframe id="timewall-frame" title="Timewall Offerwall" onload="document.getElementById('timewall-loading').classList.add('hidden')" style="width:100%;height:80vh;min-height:560px;border:0;"></iframe>
+                    </div>
+                    <div class="bg-slate-800 rounded-2xl shadow-xl border border-slate-700/60 overflow-hidden max-w-4xl">
+                        <div class="p-4 border-b border-slate-700/60"><h4 class="font-bold text-sm text-slate-200">Timewall Earnings History</h4></div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-sm">
+                                <thead><tr class="bg-slate-900/60 border-b border-slate-700/60 text-slate-400 text-xs uppercase tracking-wider">
+                                    <th class="p-4 font-bold">Offer</th><th class="p-4 font-bold">Amount</th><th class="p-4 font-bold">Status</th>
+                                </tr></thead>
+                                <tbody id="timewall-history-tbody"></tbody>
                             </table>
                         </div>
                     </div>
@@ -1863,6 +2011,8 @@
         if (!localStorage.getItem('tp_submissions')) localStorage.setItem('tp_submissions', JSON.stringify([]));
         if (!localStorage.getItem('tp_users')) localStorage.setItem('tp_users', JSON.stringify([]));
         if (!localStorage.getItem('tp_withdrawals')) localStorage.setItem('tp_withdrawals', JSON.stringify([]));
+        if (!localStorage.getItem('tp_tickets')) localStorage.setItem('tp_tickets', JSON.stringify([]));
+        if (!localStorage.getItem('tp_messages')) localStorage.setItem('tp_messages', JSON.stringify([]));
         if (!localStorage.getItem('tp_deposits')) localStorage.setItem('tp_deposits', JSON.stringify([]));
         if (!localStorage.getItem('tp_settings')) {
             localStorage.setItem('tp_settings', JSON.stringify({
@@ -1965,6 +2115,7 @@
         };
 
         function showToast(msg) {
+            if (/claimed|add bhayo|unlocked|congrat/i.test(String(msg))) { try { tpConfetti(); } catch (e) {} }
             const t = document.getElementById('toast');
             document.getElementById('toast-msg').innerText = msg;
             t.classList.remove('hidden');
@@ -2029,7 +2180,7 @@
             switchView('dashboard');
             document.getElementById('user-display-name').innerText = user.name;
             document.getElementById('user-display-uid').innerText = user.uid;
-            document.getElementById('user-display-balance').innerText = (user.balance || 0).toFixed(2);
+            window.__tpBalInstant = true; document.getElementById('user-display-balance').innerText = (user.balance || 0).toFixed(2);
             document.getElementById('nav-login-btn').innerText = 'Logout';
             document.getElementById('nav-login-btn').setAttribute('onclick', 'handleLogout()');
             const sidebarName = document.getElementById('sidebar-user-name');
@@ -2106,7 +2257,11 @@
         function renderReferralCard(user) {
             const link = window.location.origin + window.location.pathname + '?ref=' + user.uid;
             document.getElementById('referral-link-input').value = link;
-            document.getElementById('referral-count-stat').innerText = user.referralCount || 0;
+            const _mine = tpGet('tp_users', []).filter(u => u && u.referredBy === user.uid);
+            document.getElementById('referral-count-stat').innerText = Math.max(user.referralCount || 0, _mine.length);
+            const _pe = document.getElementById('referral-pending-stat');
+            if (_pe) _pe.innerText = (_mine.filter(u => !u.firstApprovalRewarded && !u.referralBlocked).length * (Number(getSettings().referralBonus) || 20)).toFixed(0);
+            const _ce = document.getElementById('referral-code-text'); if (_ce) _ce.innerText = user.uid;
             document.getElementById('referral-earnings-stat').innerText = (user.referralEarnings || 0);
             document.getElementById('referral-bonus-inline').innerText = 'Rs. ' + (getSettings().referralBonus || 0);
         }
@@ -2144,6 +2299,7 @@
 
         // ---------- DAILY BONUS ----------
         function renderDailyBonusBtn(user) {
+            try { renderProgressHub(user); } catch (e) {}
             const btn = document.getElementById('daily-bonus-btn');
             if (user.lastCheckIn === todayStr()) {
                 btn.disabled = true;
@@ -2186,6 +2342,7 @@
 
         // ---------- SPIN WHEEL ----------
         function renderSpinBtn(user) {
+            try { renderProgressHub(user); } catch (e) {}
             const btn = document.getElementById('spin-btn');
             if (user.lastSpin === todayStr()) {
                 btn.disabled = true;
@@ -2247,7 +2404,7 @@
             // Leaderboard is disabled for users — always fall back to the Task Wall.
             if (tab === 'leaderboard') tab = 'tasks';
 
-            const tabs = ['tasks', 'history', 'statements', 'referrals', 'reviews'];
+            const tabs = ['tasks', 'history', 'statements', 'referrals', 'reviews', 'timewall', 'notifications', 'tickets'];
             tabs.forEach(t => {
                 document.getElementById(`user-tab-${t}`).classList.add('hidden');
                 document.getElementById(`tab-btn-${t}`).className = "pb-3 font-bold text-sm text-slate-400 hover:text-slate-200 transition whitespace-nowrap flex items-center space-x-2";
@@ -2275,6 +2432,9 @@
 
             if (tab === 'leaderboard') loadLeaderboard();
             if (tab === 'reviews') loadMyReviews(true);
+            if (tab === 'timewall') renderTimewallTab();
+            if (tab === 'notifications') tpRenderNotifs();
+            if (tab === 'tickets' && typeof tkOnOpen === 'function') tkOnOpen();
             updateSidebarActiveTab(tab);
         }
 
@@ -2541,6 +2701,8 @@
             renderAnnouncement(); renderTicker(); renderPostTaskTabVisibility();
             loadUserHistory(fresh.uid); loadUserStatements(fresh.uid); loadUserDeposits(fresh.uid); loadReferrals(fresh.uid);
             loadMyReviews(false); loadMyPostedTasks(fresh.uid);
+            try { renderTimewallHistory(fresh.uid); } catch (e) {}
+            try { renderProgressHub(fresh); } catch (e) {}
             tpRefreshWall();
             tpNotifTick();
         }
@@ -2657,9 +2819,10 @@ function applySubmissionReview(subId, newStatus, remark, reviewer, reviewerUid) 
         sub.netReward = netAmt;
         worker.balance = round2((worker.balance || 0) + netAmt);
         worker.totalEarned = round2((worker.totalEarned || 0) + netAmt);
-        if (!worker.firstApprovalRewarded && worker.referredBy) {
+        const _refFound = worker.referredBy ? users.find(usr => usr.uid === worker.referredBy && usr.status !== 'Banned') : null;
+        if (!worker.firstApprovalRewarded && worker.referredBy && _refFound) {   // referrer dekhiyena bhane flag nakhane: admin le approve garda tyo bonus dincha
             worker.firstApprovalRewarded = true;
-            const referrer = users.find(usr => usr.uid === worker.referredBy);
+            const referrer = _refFound;
             const refDev = tpGet('tp_refdevices', {});
             const sameDevice = !!(referrer && worker.deviceId && referrer.deviceId && worker.deviceId === referrer.deviceId);
             const deviceUsed = !!(worker.deviceId && refDev[worker.deviceId] && refDev[worker.deviceId] !== worker.uid);
@@ -2904,7 +3067,12 @@ function closeTaskAndRefund(taskId, by) {
                 if (me && t.postedBy === me.uid) return false;
                 return taskSlotInfo(t, subs).free > 0;
             });
-            const tasks = currentTaskFilter === 'All' ? allTasks : allTasks.filter(t => t.category === currentTaskFilter);
+            let tasks = currentTaskFilter === 'All' ? allTasks : allTasks.filter(t => t.category === currentTaskFilter);
+            const q = String(tpTaskQuery || '').trim().toLowerCase();
+            if (q) tasks = tasks.filter(t => (String(t.title || '') + ' ' + String(t.description || '')).toLowerCase().includes(q));
+            if (tpTaskSort === 'high') tasks = [...tasks].sort((a, b) => (Number(b.reward) || 0) - (Number(a.reward) || 0));
+            else if (tpTaskSort === 'low') tasks = [...tasks].sort((a, b) => (Number(a.reward) || 0) - (Number(b.reward) || 0));
+            else if (tpTaskSort === 'new') tasks = [...tasks].sort((a, b) => (b.createdAt || b.id || 0) - (a.createdAt || a.id || 0));
             const container = document.getElementById('task-wall-grid');
             document.getElementById('task-count-badge').innerText = tasks.length + ' Tasks';
             container.innerHTML = '';
@@ -2920,6 +3088,7 @@ function closeTaskAndRefund(taskId, by) {
                 const chk = canSubmitToTask(t, me);
                 const form = chk.ok ? `
                                 <input type="text" id="user-remark-${t.id}" placeholder="Remarks (e.g. Done with username: ram123)" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:bg-white">
+                                <button type="button" onclick="tpToggleProgress(${t.id})" class="w-full text-xs font-bold py-2 rounded-xl border transition ${tpIsStarted(t.id) ? 'bg-sky-50 border-sky-300 text-sky-700' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-400'}">${tpIsStarted(t.id) ? '⏳ In Progress — hatauna click garnus' : '▶ Start this task (In Progress ma rakhnus)'}</button>
                                 <input type="file" id="proof-${t.id}" accept="image/*" class="text-xs text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-slate-100 file:text-slate-600 hover:file:bg-slate-200 w-full bg-slate-50 border border-slate-200 rounded-xl cursor-pointer">
                                 <button onclick="submitProof(${t.id}, null, null, event)" class="w-full ${s.btn} text-white font-bold py-2.5 rounded-xl text-xs transition shadow-lg flex items-center justify-center space-x-2">
                                     <i class="fa-solid fa-cloud-arrow-up"></i>
@@ -3070,22 +3239,44 @@ function closeTaskAndRefund(taskId, by) {
         }
 
 
+        var tpTaskView = 'all';
+        function tpStarted(uid) { try { return JSON.parse(localStorage.getItem('hub_started_' + uid) || '[]') || []; } catch (e) { return []; } }
+        function tpIsStarted(id) { const au = freshActive(); return !!au && tpStarted(au.uid).indexOf(id) > -1; }
+        function tpToggleProgress(id) {
+            const au = freshActive(); if (!au) return;
+            const a = tpStarted(au.uid), i = a.indexOf(id);
+            if (i > -1) a.splice(i, 1); else a.push(id);
+            try { localStorage.setItem('hub_started_' + au.uid, JSON.stringify(a)); } catch (e) {}
+            showToast(i > -1 ? 'In Progress bata hatayo' : 'Task In Progress ma rakhiyo ⏳ — My Tasks ma herna sakincha');
+            loadTaskWall(); loadUserHistory(au.uid);
+        }
+        function tpSetTaskView(v) { tpTaskView = v; const au = freshActive(); if (au) loadUserHistory(au.uid); }
         function loadUserHistory(uid) {
-            const subs = JSON.parse(localStorage.getItem('tp_submissions')).filter(s => s.uid === uid).slice().reverse();
+            const subs = tpGet('tp_submissions', []).filter(x => x && x.uid === uid).slice().reverse();
+            const tasks = tpGet('tp_tasks', []), submitted = new Set(subs.map(x => x.taskId));
+            const prog = tpStarted(uid).filter(id => !submitted.has(id)).map(id => tasks.find(t => t.id === id)).filter(Boolean)
+                .map(t => ({ _prog: true, taskTitle: t.title, reward: t.reward, userRemark: 'Abhai proof submit gareko chaina', adminRemark: 'Task Wall ma gayera proof submit garnus' }));
+            const kind = r => r._prog ? 'progress' : (r.status === 'Approved' ? 'done' : (r.status === 'Rejected' ? 'rejected' : 'pending'));
+            const rows = prog.concat(subs), cnt = { progress: 0, pending: 0, done: 0, rejected: 0 }, earned = { v: 0 };
+            rows.forEach(r => { cnt[kind(r)]++; if (kind(r) === 'done') earned.v += Number(r.netReward != null ? r.netReward : r.reward) || 0; });
+            const M = [['progress', 'In Progress', 'fa-hourglass-start', 'text-sky-300 bg-sky-500/10 border-sky-500/30'], ['pending', 'Pending Review', 'fa-clock', 'text-amber-300 bg-amber-500/10 border-amber-500/30'],
+                ['done', 'Completed', 'fa-circle-check', 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'], ['rejected', 'Rejected', 'fa-circle-xmark', 'text-rose-300 bg-rose-500/10 border-rose-500/30']];
+            const sum = document.getElementById('mytasks-summary');
+            if (sum) sum.innerHTML = M.map(m => `<button onclick="tpSetTaskView('${m[0]}')" class="text-left rounded-2xl border p-4 transition hover:brightness-125 ${m[3]} ${tpTaskView === m[0] ? 'ring-2 ring-white/40' : ''}"><i class="fa-solid ${m[2]}"></i><span class="block text-2xl font-black mt-1">${cnt[m[0]]}</span><span class="text-[11px] font-bold uppercase tracking-wider opacity-80">${m[1]}</span></button>`).join('')
+                + `<div class="col-span-full flex justify-between items-center text-xs text-slate-400 px-1"><span>Completed bata kamai: <b class="text-emerald-400">Rs. ${earned.v.toFixed(2)}</b></span><button onclick="tpSetTaskView('all')" class="font-bold ${tpTaskView === 'all' ? 'text-white' : 'text-indigo-300 hover:text-white'}">Sabai herne (${rows.length})</button></div>`;
+            const shown = rows.filter(r => tpTaskView === 'all' || kind(r) === tpTaskView);
             const tbody = document.getElementById('user-submissions-tbody');
-            tbody.innerHTML = subs.length === 0 ? '<tr><td colspan="4" class="p-6 text-center text-slate-500 text-xs">Kunai submission chainan.</td></tr>' : '';
-
-            subs.forEach(s => {
-                let badge = s.status === 'Approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : (s.status === 'Rejected' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20');
-                tbody.innerHTML += `
-                    <tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition">
-                        <td class="p-4 font-medium text-slate-200">${s.taskTitle}<br><span class="text-xs text-slate-400 font-mono">User note: ${s.userRemark}</span></td>
-                        <td class="p-4 font-bold text-emerald-400">${tpRewardHtml(s)}</td>
-                        <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold ${badge}">${s.status}</span></td>
-                        <td class="p-4 text-xs text-slate-300">${esc(s.adminRemark)}${s.reviewedBy ? `<br><span class="text-[10px] text-slate-500">by ${esc(s.reviewedBy)}</span>` : ''}</td>
-                    </tr>
-                `;
-            });
+            const B = { progress: 'bg-sky-500/10 text-sky-300 border border-sky-500/20', pending: 'bg-amber-500/10 text-amber-400 border border-amber-500/20', done: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20', rejected: 'bg-red-500/10 text-red-400 border border-red-500/20' };
+            const L = { progress: 'In Progress', pending: 'Pending', done: 'Completed', rejected: 'Rejected' };
+            tbody.innerHTML = shown.length === 0 ? '<tr><td colspan="4" class="p-6 text-center text-slate-500 text-xs">Yo section ma kunai task chaina.</td></tr>' : shown.map(r => {
+                const k = kind(r);
+                return `<tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition">
+                        <td class="p-4 font-medium text-slate-200">${esc(r.taskTitle)}<br><span class="text-xs text-slate-400 font-mono">User note: ${esc(r.userRemark)}</span></td>
+                        <td class="p-4 font-bold text-emerald-400">${r._prog ? 'Rs. ' + (Number(r.reward) || 0) : tpRewardHtml(r)}</td>
+                        <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold ${B[k]}">${L[k]}</span></td>
+                        <td class="p-4 text-xs text-slate-300">${esc(r.adminRemark)}${r.reviewedBy ? `<br><span class="text-[10px] text-slate-500">by ${esc(r.reviewedBy)}</span>` : ''}</td>
+                    </tr>`;
+            }).join('');
         }
 
         // Statements
@@ -3095,12 +3286,12 @@ function closeTaskAndRefund(taskId, by) {
             tbody.innerHTML = list.length === 0 ? '<tr><td colspan="3" class="p-6 text-center text-slate-500 text-xs">Kunai payment statement chainan.</td></tr>' : '';
 
             list.forEach(w => {
-                let badge = w.status === 'Paid' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : (w.status === 'Rejected' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20');
+                let badge = (w.status === 'Paid' || w.status === 'Approved') ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : (w.status === 'Rejected' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20');
                 tbody.innerHTML += `
                     <tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition">
                         <td class="p-4"><b class="text-white">${w.method}</b><br><span class="text-xs text-slate-400 font-mono">${w.account}</span></td>
                         <td class="p-4 font-bold text-emerald-400">Rs. ${w.amount}</td>
-                        <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold ${badge}">${w.status}</span>${w.status === 'Rejected' ? '<br><span class="text-[10px] text-slate-400">' + esc(w.adminRemark || '') + (w.refunded ? ' — Rs. ' + w.amount + ' balance ma refund bhayo' : '') + '</span>' : ''}</td>
+                        <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold ${badge}">${w.status}</span>${w.status === 'Rejected' ? '<br><span class="text-[10px] text-slate-400">' + esc(w.adminRemark || '') + (w.refunded ? ' — Rs. ' + w.amount + ' balance ma refund bhayo' : ' — refund process hudai cha...') + '</span>' : (w.status === 'Pending' ? '<br><span class="text-[10px] text-slate-400">Rs. ' + w.amount + ' balance bata katiyo — reject bhayo bhane refund huncha</span>' : '')}</td>
                     </tr>
                 `;
             });
@@ -3123,6 +3314,154 @@ function closeTaskAndRefund(taskId, by) {
                     </tr>
                 `;
             });
+        }
+
+        // ---------- REFERRAL SHARE ----------
+        function copyReferralCode() {
+            const au = freshActive(); if (!au) return;
+            const done = () => showToast('Referral code copied: ' + au.uid);
+            if (navigator.clipboard) navigator.clipboard.writeText(au.uid).then(done, done); else done();
+        }
+        function shareReferral(kind) {
+            const au = freshActive(); if (!au) return;
+            const link = document.getElementById('referral-link-input').value;
+            const msg = 'Mero TaskSewa ma task garera paisa kamaun! Mero referral code ' + au.uid + ' halera join garnus: ' + link;
+            if (kind === 'wa') window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank', 'noopener,noreferrer');
+            else if (kind === 'fb') window.open('https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(link), '_blank', 'noopener,noreferrer');
+            else if (navigator.share) navigator.share({ title: 'Mero TaskSewa', text: msg, url: link }).catch(() => {});
+            else copyReferralLink();
+        }
+
+        // ---------- PROGRESS HUB (level, missions, badges) + EXTRAS ----------
+        // Yo sabai display-only ho: balance kahin pani badalinna (balance backend/existing flow bata matra badhcha).
+        var tpTaskQuery = '', tpTaskSort = '';
+        function renderProgressHub(user) {
+            if (!user || !document.getElementById('lvl-bar')) return;
+            const tiers = [['Bronze', 0], ['Silver', 500], ['Gold', 2000], ['Platinum', 5000]];
+            const te = user.totalEarned || 0;
+            let i = 0; tiers.forEach((t, k) => { if (te >= t[1]) i = k; });
+            const cur = tiers[i], nxt = tiers[i + 1];
+            document.getElementById('lvl-now').innerText = cur[0];
+            document.getElementById('lvl-next').innerText = nxt ? nxt[0] : 'MAX';
+            document.getElementById('lvl-bar').style.width = (nxt ? Math.min(100, (te - cur[1]) / (nxt[1] - cur[1]) * 100) : 100).toFixed(0) + '%';
+            document.getElementById('lvl-hint').innerText = nxt ? nxt[0] + ' ko lagi Rs. ' + (nxt[1] - te).toFixed(2) + ' aru kamaunus' : 'Tapai sabbhanda mathillo level (Platinum) ma hunuhuncha 🎉';
+
+            const subs = tpGet('tp_submissions', []).filter(x => x && x.uid === user.uid), today = todayStr();
+            const approved = subs.filter(x => /^approved/i.test(x.status || '')).length;
+            const M = [
+                ['Daily bonus claim garnus', user.lastCheckIn === today, 'claimDailyBonus()', 'fa-gift'],
+                ['Daily spin ghumaunus', user.lastSpin === today, 'spinNow()', 'fa-dharmachakra'],
+                ['Aaja 1 task submit garnus', subs.some(x => new Date(x.subId).toDateString() === today), "switchUserTab('tasks')", 'fa-list-check'],
+                ['1 jana sathi invite garnus', (user.referralCount || 0) > 0, 'copyReferralLink()', 'fa-user-plus']
+            ];
+            document.getElementById('mission-count').innerText = M.filter(m => m[1]).length + '/' + M.length;
+            document.getElementById('mission-list').innerHTML = M.map(m => `<li><button ${m[1] ? 'disabled' : `onclick="${m[2]}"`} class="w-full flex items-center gap-3 text-left text-xs font-semibold rounded-xl px-3 py-2.5 border transition ${m[1] ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300 cursor-default' : 'bg-slate-900/60 border-slate-700 text-slate-200 hover:border-indigo-500'}"><i class="fa-solid ${m[1] ? 'fa-circle-check' : m[3]} w-4 text-center"></i><span class="flex-grow ${m[1] ? 'line-through opacity-70' : ''}">${m[0]}</span>${m[1] ? '' : '<i class="fa-solid fa-chevron-right text-[10px] text-slate-500"></i>'}</button></li>`).join('');
+
+            const tw = tpGet('tp_notifications', []).some(n => n && n.uid === user.uid && n.src === 'timewall' && n.kind === 'credit');
+            const st = user.checkInStreak || 0, rc = user.referralCount || 0;
+            const B = [
+                ['First Task', 'fa-flag-checkered', approved >= 1], ['Task Pro (10)', 'fa-list-check', approved >= 10], ['Task Master (50)', 'fa-trophy', approved >= 50],
+                ['3-Day Streak', 'fa-fire', st >= 3], ['7-Day Streak', 'fa-fire-flame-curved', st >= 7], ['Rs. 100 Earned', 'fa-coins', te >= 100],
+                ['Rs. 500 Earned', 'fa-sack-dollar', te >= 500], ['Recruiter', 'fa-user-plus', rc >= 1], ['Team Builder (5)', 'fa-people-group', rc >= 5], ['Timewall Pro', 'fa-hourglass-half', tw]
+            ];
+            document.getElementById('badge-count').innerText = B.filter(b => b[2]).length + '/' + B.length;
+            document.getElementById('badge-grid').innerHTML = B.map(b => `<div class="flex items-center gap-2.5 rounded-xl border px-3 py-2.5 ${b[2] ? 'bg-gradient-to-br from-indigo-500/15 to-pink-500/10 border-indigo-400/30 text-slate-100' : 'bg-slate-900/50 border-slate-700/60 text-slate-500'}"><span class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-sm ${b[2] ? 'bg-amber-400/20 text-amber-300' : 'bg-slate-800 text-slate-600'}"><i class="fa-solid ${b[2] ? b[1] : 'fa-lock'}"></i></span><span class="text-[11px] font-bold leading-tight">${b[0]}</span></div>`).join('');
+            const wk = document.getElementById('week-chart');   // pichhillo 7 din ko approved earning (display-only)
+            if (wk) {
+                const days = Array.from({ length: 7 }, (_, k) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - (6 - k)); return { d, v: 0 }; });
+                subs.forEach(x => { if (!/^approved/i.test(x.status || '')) return; const t = new Date(x.subId); t.setHours(0, 0, 0, 0); const o = days.find(z => z.d.getTime() === t.getTime()); if (o) o.v += Number(x.netReward != null ? x.netReward : x.reward) || 0; });
+                const mx = Math.max(1, ...days.map(z => z.v));
+                wk.innerHTML = days.map(z => `<div class="flex-1 flex flex-col items-center gap-1" title="Rs. ${z.v.toFixed(2)}"><div class="w-full flex items-end h-12"><div class="w-full rounded-t-md bg-gradient-to-t from-indigo-600 to-pink-500" style="height:${Math.max(4, z.v / mx * 100)}%;opacity:${z.v ? 1 : 0.25}"></div></div><span class="text-[9px] font-bold text-slate-500">${'SMTWTFS'[z.d.getDay()]}</span></div>`).join('');
+            }
+            try {   // naya badge unlock bhayepachi matra toast (pahilo choti silent save)
+                const k = 'hub_badges_' + user.uid, raw = localStorage.getItem(k), now = B.filter(b => b[2]).map(b => b[0]);
+                if (raw) { const seen = JSON.parse(raw), nw = now.filter(n => !seen.includes(n)); if (nw.length) showToast('🏅 Badge unlocked: ' + nw.join(', ')); }
+                localStorage.setItem(k, JSON.stringify(now));
+            } catch (e) {}
+        }
+        function tpConfetti() {
+            if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            const c = document.createElement('canvas'); c.width = innerWidth; c.height = innerHeight;
+            c.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999';
+            document.body.appendChild(c);
+            const x = c.getContext('2d'), cols = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#38bdf8'];
+            const ps = Array.from({ length: 90 }, () => ({ x: innerWidth / 2, y: innerHeight * 0.35, vx: (Math.random() - 0.5) * 14, vy: -Math.random() * 12 - 3, s: 5 + Math.random() * 5, c: cols[Math.random() * 5 | 0], r: Math.random() * 6 }));
+            let f = 0;
+            (function t() {
+                x.clearRect(0, 0, c.width, c.height);
+                ps.forEach(p => { p.vy += 0.35; p.x += p.vx; p.y += p.vy; p.r += 0.2; x.save(); x.translate(p.x, p.y); x.rotate(p.r); x.fillStyle = p.c; x.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6); x.restore(); });
+                if (++f < 110) requestAnimationFrame(t); else c.remove();
+            })();
+        }
+        function tpTimewallLoad() {
+            const au = freshActive(); if (!au || !timewallConfigured()) return;
+            const l = document.getElementById('timewall-loading'), h = document.getElementById('timewall-help');
+            if (l) { l.classList.remove('hidden'); setTimeout(() => l.classList.add('hidden'), 10000); }   // load event na aayepani 10s pachi hataune
+            if (h) h.classList.remove('hidden');
+            document.getElementById('timewall-frame').src = timewallUrl(au.uid);
+        }
+
+        // ---------- TIMEWALL OFFERWALL ----------
+        // SETUP: oid = Timewall Placement ID (Placements page ko "Placement ID"). Mero TaskSewa ko ID yaha halisakiyeko cha. URL ko format Timewall ko
+        // "Integration" page ko iframe URL sanga milaunus ({oid} ra {uid} automatic replace huncha).
+        const TIMEWALL_CONFIG = {
+            offerwallId: '99a86ae1e7fc9a02',
+            urlTemplate: 'https://boostnepal.iceiy.com/'
+        };
+        function timewallConfigured() {
+            const id = String(TIMEWALL_CONFIG.offerwallId || '').trim();
+            return id !== '' && !/^YOUR_/i.test(id);
+        }
+        function timewallUrl(uid) {
+            return TIMEWALL_CONFIG.urlTemplate
+                .replace('{oid}', encodeURIComponent(TIMEWALL_CONFIG.offerwallId))
+                .replace('{uid}', encodeURIComponent(uid));
+        }
+        // Backend (Cloud Function) le balance add garera app_notifications ma src:'timewall' record rakhcha.
+        function renderTimewallHistory(uid) {
+            const tbody = document.getElementById('timewall-history-tbody');
+            if (!tbody) return;
+            const rows = tpGet('tp_notifications', []).filter(n => n && n.uid === uid && n.src === 'timewall')
+                .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+            let total = 0;
+            rows.forEach(n => { const a = Number(n.amount) || 0; total += n.kind === 'chargeback' ? -a : a; });
+            document.getElementById('timewall-total').innerText = total.toFixed(2);
+            tbody.innerHTML = rows.length === 0
+                ? '<tr><td colspan="3" class="p-6 text-center text-slate-500 text-xs">Kunai Timewall earning chainan.</td></tr>'
+                : rows.slice(0, 50).map(n => {
+                    const cb = n.kind === 'chargeback';
+                    const badge = cb ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                    return `<tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition">
+                        <td class="p-4 font-medium text-slate-200">${esc(n.offer || 'Timewall offer')}<br><span class="text-[10px] text-slate-500">${esc(new Date(n.ts || 0).toLocaleString())}</span></td>
+                        <td class="p-4 font-bold ${cb ? 'text-red-400' : 'text-emerald-400'}">${cb ? '-' : '+'}Rs. ${(Number(n.amount) || 0).toFixed(2)}</td>
+                        <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold ${badge}">${cb ? 'Chargeback' : 'Credited'}</span></td>
+                    </tr>`;
+                }).join('');
+        }
+        function renderTimewallTab() {
+            const au = freshActive();
+            if (!au) return;
+            const frame = document.getElementById('timewall-frame');
+            const wrap = document.getElementById('timewall-frame-wrap');
+            const off = document.getElementById('timewall-unconfigured');
+            const btn = document.getElementById('timewall-newtab-btn');
+            if (timewallConfigured()) {
+                off.classList.add('hidden');
+                wrap.classList.remove('hidden');
+                btn.classList.remove('hidden'); btn.classList.add('flex');
+                if (frame.dataset.uid !== au.uid) { frame.dataset.uid = au.uid; tpTimewallLoad(); }   // yo user ko lagi matra eutai choti load
+            } else {
+                off.classList.remove('hidden');
+                wrap.classList.add('hidden');
+                btn.classList.add('hidden'); btn.classList.remove('flex');
+            }
+            renderTimewallHistory(au.uid);
+        }
+        function openTimewallNewTab() {
+            const au = freshActive();
+            if (!au || !timewallConfigured()) return;
+            const h = safeUrl(timewallUrl(au.uid));
+            if (h) window.open(h, '_blank', 'noopener,noreferrer');
         }
 
         // ---------- LEADERBOARD ----------
@@ -3334,13 +3673,8 @@ function closeTaskAndRefund(taskId, by) {
                 return;
             }
 
-            u.balance = round2((u.balance || 0) - amount);
-            localStorage.setItem('tp_users', JSON.stringify(users));
-            localStorage.setItem('tp_activeUser', JSON.stringify(u));
-            document.getElementById('user-display-balance').innerText = u.balance.toFixed(2);
-            renderWithdrawProgress(u);
-
-            let withdrawals = JSON.parse(localStorage.getItem('tp_withdrawals'));
+            // 1) save the withdrawal request FIRST (so the balance animation knows why the balance is dropping)
+            let withdrawals = JSON.parse(localStorage.getItem('tp_withdrawals') || '[]');
             withdrawals.push({
                 withdrawId: Date.now(),
                 uid: u.uid,
@@ -3348,11 +3682,21 @@ function closeTaskAndRefund(taskId, by) {
                 method: method,
                 account: account,
                 amount: amount,
-                status: 'Pending'
+                status: 'Pending',
+                balanceDeducted: true,
+                refunded: false,
+                createdAt: new Date().toISOString()
             });
             localStorage.setItem('tp_withdrawals', JSON.stringify(withdrawals));
 
-            showToast('Withdrawal request sent successfully!');
+            // 2) deduct from the user's REAL balance right away (approved or not) => MAIN balance counts down with animation
+            u.balance = round2((u.balance || 0) - amount);
+            localStorage.setItem('tp_users', JSON.stringify(users));
+            localStorage.setItem('tp_activeUser', JSON.stringify(u));
+            document.getElementById('user-display-balance').innerText = u.balance.toFixed(2);
+            renderWithdrawProgress(u);
+
+            showToast('Withdrawal request sent! Rs. ' + amount.toFixed(2) + ' balance bata katiyo (reject bhayo bhane refund huncha).');
             closeWithdrawModal();
             document.getElementById('withdraw-account').value = '';
             document.getElementById('withdraw-amount').value = '';
@@ -3383,7 +3727,7 @@ function tpDeviceId() {
 }
 
 // ---------- INSTANT SYNC (user page <-> admin page) ----------
-const TP_WATCH = ['tp_tasks', 'tp_submissions', 'tp_users', 'tp_withdrawals', 'tp_deposits', 'tp_settings', 'tp_notifications', 'tp_adminlog'];
+const TP_WATCH = ['tp_tickets', 'tp_messages', 'tp_tasks', 'tp_submissions', 'tp_users', 'tp_withdrawals', 'tp_deposits', 'tp_settings', 'tp_notifications', 'tp_adminlog'];
 const _tpHandlers = [];
 let _tpTimer = null, _tpSig = null, _tpOwnWrite = false, _tpChannel = null;
 function tpOnDataChange(fn) { _tpHandlers.push(fn); }
@@ -3537,26 +3881,37 @@ function freshActive() {
 }
 
 // ---------- REFERRAL: capture ?ref= and apply anti-abuse rules ----------
+function tpNormRef(v) {   // "uid-1234567" / "1234567" / " UID-1234567 " => "UID-1234567", nabhaye null
+    v = String(v || '').trim().toUpperCase().replace(/\s+/g, '');
+    if (/^\d{6,13}$/.test(v)) v = 'UID-' + v;
+    return /^UID-\d{6,13}$/.test(v) ? v : null;
+}
 (function tpCaptureRef() {
     try {
-        const p = new URLSearchParams(location.search).get('ref');
-        if (p && /^UID-\d+$/i.test(p)) localStorage.setItem('tp_pendingRef', p.toUpperCase());
+        const q = new URLSearchParams(location.search), r = tpNormRef(q.get('ref') || q.get('r') || q.get('code'));
+        if (r) { localStorage.setItem('tp_pendingRef', r); try { sessionStorage.setItem('tp_pendingRef', r); } catch (e) {} }
+        setTimeout(function () {   // signup form ma code auto-bharne + "invited by" dekhaune
+            const r2 = tpNormRef(localStorage.getItem('tp_pendingRef')), i = document.getElementById('reg-refcode'), n = document.getElementById('reg-refnote');
+            if (i && r2 && !i.value) i.value = r2;
+            if (n && r2) { n.textContent = '🎉 ' + r2 + ' le tapailai invite garnuhuncha'; n.classList.remove('hidden'); }
+        }, 0);
     } catch (e) {}
 })();
 // Called while a NEW account is being created. Returns referrer uid, or null when not allowed:
 //  - referrer must exist, and must not be on the same browser/device as the new account
 //  - a device that already has an account cannot create another one with a referral
 function tpResolveReferral(users) {
-    const ref = localStorage.getItem('tp_pendingRef');
+    const ref = tpNormRef(localStorage.getItem('tp_pendingRef'));
+    localStorage.removeItem('tp_pendingRef'); try { sessionStorage.removeItem('tp_pendingRef'); } catch (e) {}
     if (!ref) return null;
-    localStorage.removeItem('tp_pendingRef');
-    const referrer = users.find(function (u) { return u.uid === ref; });
-    if (!referrer || referrer.status === 'Banned') return null;
+    const say = function (m) { try { showToast(m); } catch (e) {} };
     const dev = tpDeviceId();
-    if (referrer.deviceId && referrer.deviceId === dev) return null;
-    if (users.some(function (u) { return u.deviceId === dev; })) return null;
-    referrer.referralCount = (referrer.referralCount || 0) + 1;
-    return referrer.uid;
+    const referrer = users.find(function (u) { return u.uid === ref; });
+    // Referrer yo browser ma nadekhiyepani code manincha (purano code: user le dekhna nasakne rules); bonus dina bela feri verify huncha.
+    if (referrer && referrer.status === 'Banned') { say('Referral code valid chaina.'); return null; }
+    if (referrer && referrer.deviceId && referrer.deviceId === dev) { say('Referral lagena: afno device bata afnai code prayog garna mildaina.'); return null; }
+    if (users.some(function (u) { return u.deviceId === dev; })) { say('Referral lagena: yo device ma pahile nai account cha.'); return null; }
+    return ref;
 }
 
 // ---------- NOTIFICATION BELL ----------
@@ -3593,6 +3948,7 @@ function tpRenderNotifs() {
     const unread = mine.filter(function (n) { return !n.read; }).length;
     const badge = document.getElementById('notif-badge');
     if (badge) { badge.innerText = unread > 99 ? '99+' : unread; badge.classList.toggle('hidden', unread === 0); }
+    try { tpRenderNotifTab(mine, unread); } catch (e) {}
     const box = document.getElementById('notif-list');
     if (!box) return;
     box.innerHTML = mine.length === 0
@@ -3602,7 +3958,29 @@ function tpRenderNotifs() {
                 '<div class="pt-0.5">' + tpNotifIcon(n.type) + '</div>' +
                 '<div class="min-w-0"><p class="text-xs text-slate-200 leading-snug break-words">' + esc(n.text) + '</p>' +
                 '<p class="text-[10px] text-slate-500 mt-1">' + esc(new Date(n.ts).toLocaleString()) + '</p></div></div>';
-        }).join('');
+        }).join('') + '<div onclick="sidebarGoToTab(\'notifications\');document.getElementById(\'notif-panel\').classList.add(\'hidden\')" class="px-4 py-3 text-center text-xs font-bold text-indigo-300 hover:text-white cursor-pointer">Sabai notification herne →</div>';
+}
+var tpNotifFilter = 'all';
+function tpSetNotifFilter(f) { tpNotifFilter = f; tpRenderNotifs(); }
+function tpRenderNotifTab(all, unread) {
+    ['notif-tab-badge', 'notif-side-badge'].forEach(function (id) { var b = document.getElementById(id); if (b) { b.innerText = unread > 99 ? '99+' : unread; b.classList.toggle('hidden', unread === 0); } });
+    const box = document.getElementById('notif-tab-list'); if (!box) return;
+    const F = { all: function () { return true; }, unread: function (n) { return !n.read; }, money: function (n) { return n.type === 'money' || n.src === 'timewall'; },
+        tasks: function (n) { return !n.isNotice && n.type !== 'money' && n.src !== 'timewall'; }, notice: function (n) { return !!n.isNotice; } };
+    const names = [['all', 'Sabai'], ['unread', 'Unread'], ['money', 'Paisa'], ['tasks', 'Task updates'], ['notice', 'Notices']];
+    document.getElementById('notif-tab-chips').innerHTML = names.map(function (c) {
+        return '<button onclick="tpSetNotifFilter(\'' + c[0] + '\')" class="text-xs font-bold px-3.5 py-1.5 rounded-xl border transition ' + (tpNotifFilter === c[0] ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-indigo-500') + '">' + c[1] + ' (' + all.filter(F[c[0]]).length + ')</button>';
+    }).join('');
+    const list = all.filter(F[tpNotifFilter]);
+    const today = new Date().toDateString(), yest = new Date(Date.now() - 864e5).toDateString();
+    let last = '';
+    box.innerHTML = list.length === 0 ? '<p class="p-8 text-center text-xs text-slate-500">Yo section ma kunai notification chaina.</p>' : list.slice(0, 100).map(function (n) {
+        const d = new Date(n.ts || 0).toDateString(), g = d === today ? 'Aaja' : d === yest ? 'Hijo' : d;
+        const head = g !== last ? '<div class="px-4 py-2 bg-slate-900/60 text-[10px] font-bold uppercase tracking-wider text-slate-500">' + esc(g) + '</div>' : ''; last = g;
+        return head + '<div onclick="tpReadNotif(\'' + esc(n.id) + '\')" class="flex gap-3 px-4 py-3.5 border-b border-slate-700/50 cursor-pointer hover:bg-slate-700/30 ' + (n.read ? '' : 'bg-indigo-500/10') + '">' +
+            '<div class="pt-0.5 w-5 text-center">' + tpNotifIcon(n.type) + '</div><div class="min-w-0 flex-grow"><p class="text-sm text-slate-200 leading-snug break-words">' + esc(n.text) + '</p>' +
+            '<p class="text-[10px] text-slate-500 mt-1">' + esc(new Date(n.ts || 0).toLocaleTimeString()) + '</p></div>' + (n.read ? '' : '<span class="w-2 h-2 rounded-full bg-indigo-400 mt-2 shrink-0"></span>') + '</div>';
+    }).join('');
 }
 function tpReadNotif(id) {
     if (String(id).indexOf('notice_') === 0) {
@@ -3822,7 +4200,7 @@ tpWatchPaging(['user-submissions-tbody', 'user-statements-tbody', 'user-deposits
 
                 // Sirf chhoto profile (users/{uid}) save hunchha. Wallet/Task profile ra email-alias check
                 // email verify bhayepachi pahilo login ma huncha.
-                const pendingRef = localStorage.getItem('tp_pendingRef') || null;
+                const pendingRef = tpNormRef((document.getElementById('reg-refcode') || {}).value) || tpNormRef(localStorage.getItem('tp_pendingRef')) || tpNormRef((function () { try { return sessionStorage.getItem('tp_pendingRef'); } catch (e) { return null; } })()) || null;
                 try {
                     const prof = { fullName: fullName, email: email, userPassword: password, isAdmin: false, createdAt: new Date().toISOString(), pendingProfile: true };
                     if (pendingRef) prof.pendingRef = String(pendingRef).slice(0, 39);
@@ -4224,5 +4602,497 @@ renderSiteInfo(); setTimeout(renderSiteInfo, 1500);
         setActive('home');
     })();
     </script>
+<!-- ===== LIVE BALANCE COUNTER (paisa-by-paisa animation + coin sound) ===== -->
+<style>
+#user-display-balance{display:inline-block;font-variant-numeric:tabular-nums;min-width:3ch;transition:color .3s}
+#user-display-balance.tp-bal-counting{color:#fde047;text-shadow:0 0 10px rgba(253,224,71,.95),0 0 24px rgba(52,211,153,.8);animation:tpBalGlow .6s ease-in-out infinite alternate}
+#user-display-balance.tp-bal-bump{animation:tpBalBump .35s ease-out}
+@keyframes tpBalGlow{from{text-shadow:0 0 8px rgba(253,224,71,.8),0 0 18px rgba(52,211,153,.6)}to{text-shadow:0 0 16px rgba(253,224,71,1),0 0 34px rgba(52,211,153,1)}}
+@keyframes tpBalBump{0%{transform:scale(1)}40%{transform:scale(1.16)}100%{transform:scale(1)}}
+#user-display-balance.tp-bal-counting.tp-bal-down{color:#fca5a5;text-shadow:0 0 10px rgba(248,113,113,.95),0 0 24px rgba(244,63,94,.8)}
+.tp-bal-float.tp-bal-float-down{color:#f87171;text-shadow:0 2px 10px rgba(0,0,0,.6),0 0 14px rgba(248,113,113,.9)}
+.tp-bal-float{position:fixed;z-index:100000;pointer-events:none;font-weight:900;font-size:20px;color:#34d399;text-shadow:0 2px 10px rgba(0,0,0,.6),0 0 14px rgba(52,211,153,.9);white-space:nowrap}
+.tp-bal-coin{position:fixed;z-index:99999;pointer-events:none;font-size:20px;line-height:1;will-change:transform,opacity}
+#tp-bal-sound-btn{margin-left:8px;width:22px;height:22px;border-radius:9999px;background:rgba(255,255,255,.12);color:#fde68a;font-size:11px;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;cursor:pointer;border:0}
+#tp-bal-sound-btn:hover{background:rgba(255,255,255,.25)}
+</style>
+<script>
+(function () {
+    'use strict';
+    var EL_ID = 'user-display-balance';
+    var SOUND_KEY = 'tp_bal_sound';
+    var st = { shown: 0, last: '', anim: null, grace: 0, lastTick: 0, lastRupee: 0, lastCoin: 0, real: 0, prevReal: 0, hold: 0, timer: null, deferT0: 0, seedUntil: 0 };
+    var reduceMotion = false;
+    try { reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+
+    function el() { return document.getElementById(EL_ID); }
+
+    /* ---------------- SOUND (WebAudio - no external files) ---------------- */
+    var ac = null;
+    function soundOn() { try { return localStorage.getItem(SOUND_KEY) !== '0'; } catch (e) { return true; } }
+    function getCtx() {
+        try {
+            if (!ac) { var AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; ac = new AC(); }
+            if (ac.state === 'suspended') ac.resume();
+            return ac;
+        } catch (e) { return null; }
+    }
+    function unlock() { getCtx(); }
+    ['pointerdown', 'touchstart', 'click', 'keydown'].forEach(function (ev) {
+        window.addEventListener(ev, unlock, { passive: true });
+    });
+    function tone(freq, when, dur, type, vol, slideTo) {
+        var c = getCtx(); if (!c || c.state !== 'running') return;
+        try {
+            var t = c.currentTime + (when || 0);
+            var o = c.createOscillator(), g = c.createGain();
+            o.type = type || 'sine';
+            o.frequency.setValueAtTime(freq, t);
+            if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+            g.gain.setValueAtTime(0.0001, t);
+            g.gain.exponentialRampToValueAtTime(vol || 0.1, t + 0.006);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+            o.connect(g); g.connect(c.destination);
+            o.start(t); o.stop(t + dur + 0.02);
+        } catch (e) {}
+    }
+    var sound = {
+        coin: function () {                       // classic "ting-ting" coin pickup
+            if (!soundOn()) return;
+            tone(988, 0, 0.09, 'square', 0.07);
+            tone(1319, 0.08, 0.35, 'square', 0.07);
+            tone(2637, 0.08, 0.3, 'sine', 0.05);
+        },
+        tick: function (p) {                      // tiny blip for every few paisa, pitch rises with progress
+            if (!soundOn()) return;
+            tone(1500 + p * 900, 0, 0.035, 'triangle', 0.045);
+        },
+        rupee: function () {                      // "ding" each time a full rupee is crossed
+            if (!soundOn()) return;
+            tone(1568, 0, 0.12, 'sine', 0.09);
+            tone(2093, 0.05, 0.2, 'sine', 0.06);
+        },
+        coinDown: function () {                   // withdraw start: falling "ting-tong"
+            if (!soundOn()) return;
+            tone(1319, 0, 0.09, 'square', 0.07);
+            tone(784, 0.08, 0.3, 'square', 0.07);
+        },
+        finishDown: function () {                 // withdraw end
+            if (!soundOn()) return;
+            tone(660, 0, 0.14, 'triangle', 0.1);
+            tone(440, 0.12, 0.26, 'triangle', 0.1);
+        },
+        finish: function () {                     // "tring tring" bell at the end
+            if (!soundOn()) return;
+            [0, 0.16].forEach(function (d) {
+                tone(1760, d, 0.12, 'triangle', 0.11);
+                tone(2349, d + 0.045, 0.14, 'triangle', 0.09);
+                tone(3136, d + 0.09, 0.22, 'sine', 0.06);
+            });
+        }
+    };
+
+    /* ---------------- VISUAL EFFECTS ---------------- */
+    function rect() { var e = el(); return e ? e.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 }; }
+
+    function floatText(txt, down) {
+        if (reduceMotion || !document.body.animate) return;
+        var r = rect(), d = document.createElement('div');
+        d.className = 'tp-bal-float' + (down ? ' tp-bal-float-down' : ''); d.textContent = txt;
+        d.style.left = (r.left + r.width / 2 - 70) + 'px';
+        d.style.top = (r.top - 4) + 'px';
+        document.body.appendChild(d);
+        var a = d.animate([
+            { transform: 'translateY(0) scale(.6)', opacity: 0 },
+            { transform: 'translateY(-18px) scale(1.15)', opacity: 1, offset: .25 },
+            { transform: 'translateY(-70px) scale(1)', opacity: 0 }
+        ], { duration: 1600, easing: 'ease-out' });
+        a.onfinish = function () { d.remove(); };
+    }
+
+    function coins(n, down) {
+        if (reduceMotion || !document.body.animate) return;
+        var r = rect();
+        for (var i = 0; i < n; i++) {
+            (function () {
+                var c = document.createElement('span');
+                c.className = 'tp-bal-coin'; c.textContent = '\uD83E\uDE99';
+                c.style.left = (r.left + r.width * (0.2 + Math.random() * 0.6)) + 'px';
+                c.style.top = (r.top + r.height / 2) + 'px';
+                document.body.appendChild(c);
+                var dx = (Math.random() - 0.5) * 160, up = 50 + Math.random() * 70, down_ = 20 + Math.random() * 80;
+                var rot = (Math.random() - 0.5) * 720;
+                var kf = down ? [      // money going OUT: coins drop away from the balance
+                    { transform: 'translate(0,-14px) scale(1) rotate(0deg)', opacity: 0 },
+                    { transform: 'translate(' + (dx * .4) + 'px,12px) scale(1.05) rotate(' + (rot * .3) + 'deg)', opacity: 1, offset: .25 },
+                    { transform: 'translate(' + dx * .8 + 'px,' + (70 + down_ ) + 'px) scale(.6) rotate(' + rot + 'deg)', opacity: 0 }
+                ] : [
+                    { transform: 'translate(0,0) scale(.5) rotate(0deg)', opacity: 0 },
+                    { transform: 'translate(' + (dx * .6) + 'px,' + (-up) + 'px) scale(1.1) rotate(' + (rot * .5) + 'deg)', opacity: 1, offset: .35 },
+                    { transform: 'translate(' + dx + 'px,' + down_ + 'px) scale(.8) rotate(' + rot + 'deg)', opacity: 0 }
+                ];
+                var a = c.animate(kf, { duration: 1000 + Math.random() * 800, delay: Math.random() * 250, easing: 'cubic-bezier(.2,.7,.4,1)', fill: 'both' });
+                a.onfinish = function () { c.remove(); };
+            })();
+        }
+    }
+
+    function bump() {
+        var e = el(); if (!e || reduceMotion) return;
+        e.classList.remove('tp-bal-bump'); void e.offsetWidth; e.classList.add('tp-bal-bump');
+    }
+
+    /* ---------------- COUNTER CORE ---------------- */
+    function write(v) {
+        var e = el(); if (!e) return;
+        st.shown = v;
+        var t = v.toFixed(2);
+        st.last = t;
+        if (e.textContent !== t) e.textContent = t;
+    }
+
+    function stop() {
+        if (st.anim) { cancelAnimationFrame(st.anim.raf); st.anim = null; }
+        var e = el(); if (e) e.classList.remove('tp-bal-counting');
+    }
+
+    function snap(v) { stop(); write(v); }
+
+    function r2(x) { return Math.round(x * 100) / 100; }
+
+    /* ---- helpers: my deposits / withdrawals (from localStorage, kept in sync by the app) ---- */
+    function uidNow() { try { var a = JSON.parse(localStorage.getItem('tp_activeUser') || 'null'); return a && a.uid; } catch (e) { return null; } }
+    function lst(k) { try { var a = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+    function mine(k) { var u = uidNow(); return lst(k).filter(function (x) { return x && x.uid === u; }); }
+    // FIX: withdrawal amount is deducted from the real balance the moment the request is sent,
+    // so the MAIN balance on screen must drop immediately too (no more "hold" added back while Pending).
+    function hold() { return 0; }
+    // Was this balance drop caused by a withdrawal request sent a few seconds ago?
+    function recentWithdraw(amt) {
+        var now = Date.now(), ok = false;
+        mine('tp_withdrawals').forEach(function (w) {
+            if (Math.abs((Number(w.amount) || 0) - amt) < 0.011 && now - (Number(w.withdrawId) || 0) < 15000) ok = true;
+        });
+        return ok;
+    }
+    function labelFor(kind, up) {
+        return kind === 'withdraw' ? 'Withdraw' : kind === 'fund' ? (up ? 'Fund / Refund' : 'Fund') : (up ? 'Reward' : 'Spent');
+    }
+    var SEEN_KEY = 'tp_bal_seen', seen = null;
+    function loadSeen() {
+        if (seen) return;
+        try { var a = JSON.parse(localStorage.getItem(SEEN_KEY)); if (Array.isArray(a)) seen = a; } catch (e) {}
+        if (!seen) seen = [];
+    }
+    function saveSeen() { try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen.slice(-300))); } catch (e) {} }
+    function approvedItems() {
+        var out = [];
+        mine('tp_deposits').forEach(function (d) { if (d.status === 'Approved') out.push({ k: 'd:' + d.depositId, t: 'fund', a: Number(d.amount) || 0 }); });
+        // rejected withdrawal => amount is refunded to the balance (counts up with animation)
+        mine('tp_withdrawals').forEach(function (w) { if (w.status === 'Rejected') out.push({ k: 'r:' + w.withdrawId, t: 'refund', a: Number(w.amount) || 0 }); });
+        return out;
+    }
+    function seedSeen() {
+        loadSeen();
+        approvedItems().forEach(function (i) { if (seen.indexOf(i.k) < 0) seen.push(i.k); });
+        saveSeen();
+    }
+    // Is this balance change caused by a freshly approved Add Fund / Withdraw request?
+    function claim(type, abs) {
+        loadSeen();
+        var items = approvedItems().filter(function (i) { return i.t === type && seen.indexOf(i.k) < 0; });
+        if (!items.length) return false;
+        var sum = 0, hit = null;
+        items.forEach(function (i) { sum += i.a; });
+        if (Math.abs(sum - abs) < 0.011) hit = items;
+        else items.some(function (i) { if (Math.abs(i.a - abs) < 0.011) { hit = [i]; return true; } return false; });
+        if (!hit) return false;
+        hit.forEach(function (i) { seen.push(i.k); });
+        saveSeen();
+        return true;
+    }
+
+    /* kind: 'fund' (Add Fund approved) / 'withdraw' (Withdraw approved) => 0.50 per step
+             'task' (task earning etc.)                                   => 0.10 per step */
+    function animateTo(v, kind) {
+        var e = el(); if (!e) return;
+        var from = st.shown;
+        var up = v > from;
+        if (st.anim) { cancelAnimationFrame(st.anim.raf); } else { st.lastRupee = Math.floor(from + 1e-9); }
+        var gain = r2(v - from), abs = Math.abs(gain);
+        var step = (kind === 'task') ? 0.1 : 0.5;
+        var steps = Math.max(1, Math.ceil(abs / step - 1e-9));
+        var dur = Math.max(1500, Math.min(7000, steps * 50));     // ~50ms per step (min 1.5s, max 7s)
+        var t0 = performance.now();
+        var a = { raf: 0, to: v };
+        st.anim = a;
+        e.classList.add('tp-bal-counting');
+        e.classList.toggle('tp-bal-down', !up);
+        if (up) sound.coin(); else sound.coinDown();
+        floatText(labelFor(kind, up) + (up ? '  +' : '  \u2212') + 'Rs. ' + abs.toFixed(2), !up);
+        coins(Math.min(18, 6 + Math.round(abs / 10)), !up);
+        st.lastCoin = t0; st.lastTick = 0;
+
+        function frame(now) {
+            if (st.anim !== a) return;
+            var p = Math.min(1, (now - t0) / dur);
+            var cur;
+            if (p >= 1) cur = v;
+            else { var q = Math.floor(abs * p / step + 1e-9) * step; cur = r2(from + (up ? q : -q)); }
+            if (cur !== st.shown) {
+                write(cur);
+                if (now - st.lastTick > 55) { st.lastTick = now; sound.tick(up ? p : 1 - p); }
+                var fl = Math.floor(cur + 1e-9);
+                if (up ? fl > st.lastRupee : fl < st.lastRupee) {
+                    st.lastRupee = fl;
+                    bump(); sound.rupee(); coins(2, !up);
+                }
+                if (now - st.lastCoin > 420 && p < 0.9) { st.lastCoin = now; coins(1); }
+            }
+            if (p >= 1) {
+                st.anim = null;
+                e.classList.remove('tp-bal-counting'); e.classList.remove('tp-bal-down');
+                write(v); bump(); if (up) sound.finish(); else sound.finishDown(); coins(8, !up);
+                return;
+            }
+            a.raf = requestAnimationFrame(frame);
+        }
+        a.raf = requestAnimationFrame(frame);
+    }
+
+    function process(instant, tries) {
+        var e = el(); if (!e) return;
+        if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+        var v = r2(st.real);
+        var realChanged = st.real !== st.prevReal;
+        if (st.deferT0 && Date.now() - st.deferT0 > 1000) tries = 9;
+        function done() { st.prevReal = st.real; st.deferT0 = 0; }
+        function defer() {
+            if (!st.deferT0) st.deferT0 = Date.now();
+            write(st.shown);                                      // keep old number while we wait for the matching request status
+            st.timer = setTimeout(function () { st.timer = null; process(false, tries + 1); }, 500);
+        }
+        if (instant || document.hidden || e.offsetParent === null || Date.now() < st.grace) { done(); snap(v); return; }
+        if (st.anim && v === st.anim.to) { done(); write(st.shown); return; }   // same target again: keep animating
+        if (v === st.shown) { done(); if (!st.anim) write(v); return; }
+        var diff = r2(Math.abs(v - st.shown));
+        if (v > st.shown) {
+            // money IN: fund approved / withdrawal rejected (refund) / task reward / bonus ...
+            if (!realChanged) { done(); snap(v); return; }
+            if (claim('fund', diff) || claim('refund', diff)) { done(); animateTo(v, 'fund'); return; }
+            if (tries < 2) { defer(); return; }
+            done(); animateTo(v, 'task'); return;
+        }
+        // money OUT: withdraw request / task post (escrow) ... => counts DOWN paisa by paisa, immediately
+        done(); animateTo(v, recentWithdraw(diff) ? 'withdraw' : 'task');
+    }
+
+    function onExternalChange() {
+        var e = el(); if (!e) return;
+        var txt = (e.textContent || '').trim();
+        if (txt === st.last) return;                              // our own write
+        var r = parseFloat(txt.replace(/,/g, ''));
+        if (isNaN(r)) { st.last = txt; return; }
+        st.real = r2(r);
+        var instant = !!window.__tpBalInstant; window.__tpBalInstant = false;
+        if (instant) { st.grace = Date.now() + 4000; st.seedUntil = Date.now() + 10000; }   // login / first load => no counting from 0
+        process(instant, 0);
+    }
+
+    /* ---------------- SOUND ON/OFF BUTTON ---------------- */
+    function addSoundButton() {
+        var e = el(); if (!e || document.getElementById('tp-bal-sound-btn')) return;
+        var label = e.parentElement && e.parentElement.previousElementSibling;
+        if (!label) return;
+        var b = document.createElement('button');
+        b.id = 'tp-bal-sound-btn'; b.type = 'button'; b.title = 'Coin sound on/off';
+        function paint() { b.innerHTML = '<i class="fa-solid ' + (soundOn() ? 'fa-volume-high' : 'fa-volume-xmark') + '"></i>'; }
+        b.onclick = function (ev) {
+            ev.stopPropagation();
+            try { localStorage.setItem(SOUND_KEY, soundOn() ? '0' : '1'); } catch (x) {}
+            paint(); if (soundOn()) { getCtx(); sound.coin(); }
+        };
+        paint(); label.appendChild(b);
+    }
+
+    function init() {
+        var e = el(); if (!e) return;
+        loadSeen(); seedSeen();
+        st.seedUntil = Date.now() + 10000;
+        st.real = r2(parseFloat((e.textContent || '0').replace(/,/g, '')) || 0);
+        st.prevReal = st.real; st.hold = hold();
+        st.shown = r2(st.real + st.hold);
+        if (st.hold) { st.last = ''; write(st.shown); } else { st.last = e.textContent; }
+        new MutationObserver(onExternalChange).observe(e, { childList: true, characterData: true, subtree: true });
+        // admin approval / rejection arrives as a status change (no balance text change) => watch it
+        function watch() {
+            if (Date.now() < st.seedUntil) seedSeen();
+            /* balance changes are picked up by the MutationObserver; nothing to do for Pending requests anymore */
+        }
+        setInterval(watch, 700);
+        window.addEventListener('storage', watch);
+        addSoundButton();
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+
+    // Manual API (optional): tpBalanceTo(150.25)
+    window.tpBalanceTo = function (v) { var e = el(); if (e) e.textContent = Number(v).toFixed(2); };
+})();
+</script>
+<!-- ===== SUPPORT TICKETS: user side (Firebase live sync via tp_tickets / tp_messages) ===== -->
+<script>
+(function () {
+    'use strict';
+    var CUR = null, sigThread = '', prevAdmin = null, grace = Date.now() + 8000, lastUid = null, lastSend = 0;
+    function $(id) { return document.getElementById(id); }
+    function me() { try { return JSON.parse(localStorage.getItem('tp_activeUser') || 'null'); } catch (e) { return null; } }
+    function myT() { var a = me(); if (!a) return []; return tpGet('tp_tickets', []).filter(function (t) { return t && t.uid === a.uid; }).sort(function (x, y) { return (y.updatedAt || 0) - (x.updatedAt || 0); }); }
+    function getT(id) { return myT().filter(function (t) { return String(t.ticketId) === String(id); })[0] || null; }
+    function msgs(id) { return tpGet('tp_messages', []).filter(function (m) { return m && String(m.ticketId) === String(id); }).sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); }); }
+    function unread(t) { return (t.adminMsgs || 0) > (t.userSeenAdminMsgs || 0); }
+    function visible() { var el = $('user-tab-tickets'); return !!el && !el.classList.contains('hidden') && el.offsetParent !== null && !document.hidden; }
+    function fmt(ts) { try { return new Date(ts).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } }
+    function sid(t) { return '#' + String(t.ticketId).slice(-5); }
+    function nl(s) { return esc(s).replace(/\n/g, '<br>'); }
+    function stBadge(st) {
+        var c = st === 'Closed' ? 'bg-slate-500/15 text-slate-400 border-slate-500/30' : st === 'Answered' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+        return '<span class="text-[10px] px-2 py-0.5 rounded-full font-bold border ' + c + '">' + esc(st || 'Open') + '</span>';
+    }
+    function saveTicket(id, patch) {
+        var all = tpGet('tp_tickets', []), t = all.filter(function (x) { return String(x.ticketId) === String(id); })[0];
+        if (!t) return null; Object.assign(t, patch); tpSet('tp_tickets', all); return t;
+    }
+
+    function badges() {
+        var n = myT().filter(unread).length;
+        ['tk-side-badge', 'tk-tab-badge'].forEach(function (id) { var el = $(id); if (el) { el.textContent = n; el.classList.toggle('hidden', !n); } });
+    }
+
+    function renderList() {
+        var box = $('tk-list'); if (!box) return;
+        var list = myT();
+        if (!list.length) { box.innerHTML = '<div class="p-8 text-center text-slate-500 text-xs"><i class="fa-regular fa-comments text-2xl block mb-2"></i>Kunai ticket chaina.<br>"New Ticket" thichera admin lai message garnus.</div>'; return; }
+        box.innerHTML = list.map(function (t) {
+            var u = unread(t), act = String(CUR) === String(t.ticketId);
+            return '<button onclick="tkOpen(' + t.ticketId + ')" class="w-full text-left px-4 py-3 border-b border-slate-700/50 hover:bg-slate-700/20 transition ' + (act ? 'bg-slate-700/50' : '') + '">' +
+                '<div class="flex items-center gap-2"><span class="font-bold text-sm text-slate-100 truncate flex-1">' + (u ? '<span class="inline-block w-2 h-2 rounded-full bg-rose-500 mr-1.5"></span>' : '') + esc(t.subject) + '</span>' + stBadge(t.status) + '</div>' +
+                '<div class="text-xs text-slate-400 truncate mt-1">' + (t.lastFrom === 'admin' ? '<b>Admin:</b> ' : '<b>Tapai:</b> ') + esc(t.lastMsg || '') + '</div>' +
+                '<div class="text-[10px] text-slate-500 mt-1">' + sid(t) + ' • ' + esc(t.category || '') + ' • ' + fmt(t.updatedAt) + '</div></button>';
+        }).join('');
+    }
+
+    function layout() {
+        var lw = $('tk-list-wrap'), tw = $('tk-thread-wrap');
+        if (!lw || !tw) return;
+        var open = !!CUR;
+        lw.classList.toggle('hidden', open && window.innerWidth < 1024);
+        tw.classList.toggle('hidden', !open && window.innerWidth < 1024);
+        tw.classList.toggle('flex', open);
+    }
+
+    function renderThread(force) {
+        var tw = $('tk-thread-wrap'); if (!tw) return;
+        var t = CUR ? getT(CUR) : null;
+        if (!t) {
+            $('tk-thread-head').innerHTML = '';
+            $('tk-thread').innerHTML = '<div class="h-full flex items-center justify-center text-slate-500 text-sm text-center px-6"><div><i class="fa-regular fa-message text-3xl mb-2 block"></i>Ticket chhannus ya naya ticket kholnus</div></div>';
+            $('tk-reply-box').classList.add('hidden'); sigThread = ''; return;
+        }
+        var ms = msgs(t.ticketId);
+        var sig = t.ticketId + '|' + ms.map(function (m) { return m.msgId; }).join(',') + '|' + t.status + '|' + (t.adminSeenUserMsgs || 0);
+        if (!force && sig === sigThread) return;
+        var grew = sigThread.split('|')[0] !== String(t.ticketId) || sig.split('|')[1] !== sigThread.split('|')[1];
+        sigThread = sig;
+        $('tk-thread-head').innerHTML =
+            '<button onclick="tkBack()" class="lg:hidden text-slate-300 hover:text-white w-8 h-8 rounded-full bg-slate-700/60"><i class="fa-solid fa-arrow-left"></i></button>' +
+            '<div class="flex-1 min-w-0"><div class="font-bold text-sm text-slate-100 truncate">' + esc(t.subject) + '</div><div class="text-[10px] text-slate-500">' + sid(t) + ' • ' + esc(t.category || '') + '</div></div>' + stBadge(t.status) +
+            (t.status === 'Closed'
+                ? '<button onclick="tkSetStatus(\'Open\')" class="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200">Reopen</button>'
+                : '<button onclick="tkSetStatus(\'Closed\')" class="text-[11px] font-bold px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200">Close</button>');
+        var lastUserIdx = -1; ms.forEach(function (m, i) { if (m.from === 'user') lastUserIdx = i; });
+        $('tk-thread').innerHTML = ms.map(function (m, i) {
+            var mine = m.from === 'user';
+            return '<div class="flex ' + (mine ? 'justify-end' : 'justify-start') + '"><div class="max-w-[82%]">' +
+                '<div class="text-[10px] mb-0.5 ' + (mine ? 'text-right' : '') + ' text-slate-500">' + (mine ? 'Tapai' : '<i class="fa-solid fa-headset"></i> Admin') + ' • ' + fmt(m.ts) + '</div>' +
+                '<div class="px-3.5 py-2 rounded-2xl text-sm leading-relaxed break-words ' + (mine ? 'bg-indigo-600 text-white rounded-br-sm' : 'bg-slate-700 text-slate-100 rounded-bl-sm') + '">' + nl(m.text) + '</div>' +
+                (mine && i === lastUserIdx && (t.adminSeenUserMsgs || 0) >= (t.userMsgs || 0) && (t.userMsgs || 0) > 0 ? '<div class="text-[10px] text-emerald-400 text-right mt-0.5"><i class="fa-solid fa-check-double"></i> Admin le dekhyo</div>' : '') +
+                '</div></div>';
+        }).join('');
+        $('tk-reply-box').classList.remove('hidden');
+        if (grew || force) { var th = $('tk-thread'); th.scrollTop = th.scrollHeight; }
+    }
+
+    function render(force) { renderList(); renderThread(force); layout(); badges(); }
+
+    function markSeen() {
+        if (!CUR) return; var t = getT(CUR); if (!t) return;
+        if ((t.adminMsgs || 0) > (t.userSeenAdminMsgs || 0)) saveTicket(t.ticketId, { userSeenAdminMsgs: t.adminMsgs || 0 });
+    }
+
+    window.tkOnOpen = function () { render(true); };
+    window.tkOpen = function (id) { CUR = id; sigThread = ''; markSeen(); render(true); setTimeout(function () { var r = $('tk-reply'); if (r && window.innerWidth >= 1024) r.focus(); }, 50); };
+    window.tkBack = function () { CUR = null; sigThread = ''; render(true); };
+    window.tkOpenNew = function () { $('tk-new-box').classList.remove('hidden'); var s = $('tk-new-subject'); if (s) s.focus(); };
+    window.tkCloseNew = function () { $('tk-new-box').classList.add('hidden'); };
+
+    window.tkCreate = function () {
+        var a = me(); if (!a) { alert('Pahile login garnus.'); return; }
+        var cat = $('tk-new-cat').value, subj = $('tk-new-subject').value.trim(), text = $('tk-new-text').value.trim();
+        if (!subj) { alert('Subject lekhnus.'); return; }
+        if (!text) { alert('Message lekhnus.'); return; }
+        if (text.length > 1500) { alert('Message dherai lamo bhayo (max 1500 akshar).'); return; }
+        var open = myT().filter(function (t) { return t.status !== 'Closed'; }).length;
+        if (open >= 8) { alert('Tapai ko 8 ota ticket pahile nai khulla chha. Pahile purano ticket close garnus.'); return; }
+        var now = Date.now(), id = now * 1000 + Math.floor(Math.random() * 1000);
+        var ms = tpGet('tp_messages', []);
+        ms.push({ msgId: 'm' + now + '_' + Math.random().toString(36).slice(2, 6), ticketId: id, uid: a.uid, from: 'user', name: a.name || 'User', text: text, ts: now });
+        tpSet('tp_messages', ms);
+        var ts = tpGet('tp_tickets', []);
+        ts.push({ ticketId: id, uid: a.uid, userName: a.name || 'User', userEmail: a.email || '', category: cat, subject: subj, status: 'Open', startedBy: 'user',
+            createdAt: now, updatedAt: now, lastMsg: text.slice(0, 80), lastFrom: 'user', userMsgs: 1, adminMsgs: 0, userSeenAdminMsgs: 0, adminSeenUserMsgs: 0 });
+        tpSet('tp_tickets', ts);
+        $('tk-new-subject').value = ''; $('tk-new-text').value = ''; tkCloseNew();
+        showToast('Ticket pathayo! Admin le tapai lai yahi reply garnuhunchha.');
+        tkOpen(id);
+    };
+
+    window.tkSend = function () {
+        var a = me(), t = CUR ? getT(CUR) : null, inp = $('tk-reply'); if (!a || !t || !inp) return;
+        var text = inp.value.trim(); if (!text) return;
+        if (text.length > 1500) { alert('Message dherai lamo bhayo (max 1500 akshar).'); return; }
+        var now = Date.now(); if (now - lastSend < 1200) return; lastSend = now;
+        var ms = tpGet('tp_messages', []);
+        ms.push({ msgId: 'm' + now + '_' + Math.random().toString(36).slice(2, 6), ticketId: t.ticketId, uid: a.uid, from: 'user', name: a.name || 'User', text: text, ts: now });
+        tpSet('tp_messages', ms);
+        saveTicket(t.ticketId, { userMsgs: (t.userMsgs || 0) + 1, status: 'Open', updatedAt: now, lastMsg: text.slice(0, 80), lastFrom: 'user', userSeenAdminMsgs: t.adminMsgs || 0 });
+        inp.value = ''; render(true);
+    };
+
+    window.tkSetStatus = function (st) {
+        if (!CUR) return;
+        if (st === 'Closed' && !confirm('Yo ticket close garne? Pachhi message pathaaye feri khulchha.')) return;
+        saveTicket(CUR, { status: st, updatedAt: Date.now() }); render(true);
+    };
+
+    var rp = null;
+    document.addEventListener('keydown', function (e) {
+        if (e.target && e.target.id === 'tk-reply' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); tkSend(); }
+    });
+    window.addEventListener('resize', function () { try { layout(); } catch (e) {} });
+
+    function onData() {
+        var a = me(); if (!a || !$('user-tab-tickets')) return;
+        if (a.uid !== lastUid) { if (lastUid !== null) { CUR = null; sigThread = ''; } lastUid = a.uid; grace = Date.now() + 8000; prevAdmin = null; }
+        var list = myT(), sum = 0; list.forEach(function (t) { sum += (t.adminMsgs || 0); });
+        var viewing = visible();
+        if (prevAdmin !== null && Date.now() > grace && sum > prevAdmin && !viewing) showToast('Admin le tapai ko ticket ma reply garyo \uD83D\uDCAC');
+        prevAdmin = sum;
+        if (viewing && CUR) markSeen();
+        badges(); if (viewing) render(false);
+    }
+    tpOnDataChange(function () { try { onData(); } catch (e) { console.error('tickets', e); } });
+    setInterval(function () { try { badges(); } catch (e) {} }, 3000);
+})();
+</script>
 </body>
 </html>
