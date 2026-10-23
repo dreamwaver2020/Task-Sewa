@@ -45,23 +45,18 @@
       messagingSenderId: "985229257627",
       appId: "1:985229257627:web:be54673466ece45c03cf3e",
       measurementId: "G-PZ9SF3KY1C"
-    } },
-    { id: 'B', weight: 1, config: {
-      apiKey: "AIzaSyATNPcSS1Rj_I9YqbkDIY3wCfQ44EHnMoc",
-      authDomain: "mero-task-sewa-b.firebaseapp.com",
-      databaseURL: "https://mero-task-sewa-b-default-rtdb.firebaseio.com",   // <-- Firebase Console > Realtime Database bata URL milaunus
-      projectId: "mero-task-sewa-b",
-      storageBucket: "mero-task-sewa-b.firebasestorage.app",
-      messagingSenderId: "463752765672",
-      appId: "1:463752765672:web:49db63ebc3a4ca5096a95d",
-      measurementId: "G-S5GWWJ64FW"
     } }
   ];
-  // weight = naya signup ko hissa. A:0, B:1 garyo bhane naya signup sabai B ma jancha. Purano user afno shard ma nai rahanchha.
+  // Sirf Shard A (ek matra Firebase project) use hunchha.
 
-  var RAW_SET = Storage.prototype.setItem;        // native (this script loads first)
-  var RAW_GET = Storage.prototype.getItem;
-  var RAW_REMOVE = Storage.prototype.removeItem;
+  // 10k+ user ko data localStorage (5MB limit) ma samaudaina => thulo list haru memory ma rakhincha (Firebase bata load huncha).
+  var N_SET = Storage.prototype.setItem, N_GET = Storage.prototype.getItem, N_REMOVE = Storage.prototype.removeItem;
+  var MEM = {}, BIGK = { tp_users: 1, tp_tasks: 1, tp_submissions: 1, tp_deposits: 1, tp_withdrawals: 1, tp_tickets: 1, tp_messages: 1, tp_notifications: 1, tp_adminlog: 1, tp_deleted_users: 1 };
+  function isBig(self, k) { return self === window.localStorage && BIGK[k] === 1; }
+  var RAW_SET = function (k, v) { if (isBig(this, k)) { MEM[k] = String(v); return; } return N_SET.call(this, k, v); };
+  var RAW_GET = function (k) { if (isBig(this, k)) return (k in MEM) ? MEM[k] : null; return N_GET.call(this, k); };
+  var RAW_REMOVE = function (k) { if (isBig(this, k)) { delete MEM[k]; return; } return N_REMOVE.call(this, k); };
+  try { Object.keys(BIGK).forEach(function (k) { N_REMOVE.call(window.localStorage, k); }); } catch (e) {}   // purano thulo copy hataune
 
   if (!window.firebase) { console.error('Firebase SDK load bhayena'); return; }
   var SHARD_IDS = SHARDS_CFG.map(function (s) { return s.id; });
@@ -363,7 +358,7 @@
       var changed = applyRemote(lsKey);
       if (lsKey === 'tp_users') checkMine();
       if (changed) fire();
-    }, 0);
+    }, (S.remote[lsKey] && S.remote[lsKey].size > 1000) ? 250 : 0);
   }
 
   function hasTomb(u) {
@@ -467,6 +462,8 @@
   }
 
   // patch localStorage writes (loads before the page's own sync patch)
+  Storage.prototype.getItem = function (k) { return RAW_GET.call(this, k); };
+  Storage.prototype.removeItem = function (k) { return RAW_REMOVE.call(this, k); };
   Storage.prototype.setItem = function (k, v) {
     RAW_SET.call(this, k, v);
     if (this === window.localStorage && S.tracked[k]) { try { onLocalWrite(k, v); } catch (e) { console.error('sync push', e); } }
@@ -545,11 +542,24 @@
     m.forEach(function (u) { if (!found && (u.firebaseUid === S.fuid || (!u.firebaseUid && (u.email || '').toLowerCase() === (S.email || '')))) found = u; });
     return found;
   }
+  // Online presence: admin panel ma "Online Users" dekhauna. Tab/browser band huda afai hatincha (onDisconnect).
+  function startPresence(me) {
+    if (PAGE !== 'user' || S.presOn || !S.fuid) return;
+    S.presOn = true;
+    var ref = db.ref('presence/' + idStr(S.fuid)), ci = db.ref('.info/connected');
+    var h = ci.on('value', function (snap) {
+      if (snap.val() !== true) return;
+      ref.onDisconnect().remove().then(function () {
+        return ref.set({ online: true, name: String(me.name || '').slice(0, 99), uid: String(me.uid || '').slice(0, 39), ts: SV.TIMESTAMP });
+      }).catch(function (e) { console.warn('presence', (e && e.code) || e); });
+    });
+    S.unsubs.push(function () { try { ci.off('value', h); ref.remove(); } catch (e) {} });
+  }
   function checkMine() {
     if (PAGE !== 'user' || !S.fuid) return;
     var me = myProfile();
     if (me) {
-      S.sawMine = true;
+      S.sawMine = true; startPresence(me);
       if (!S.scoped) {
         S.scoped = true;
         listen('tp_withdrawals', db.ref('app_withdrawals').orderByChild('uid').equalTo(me.uid));
@@ -604,7 +614,7 @@
     S.unsubs.splice(0).forEach(function (u) { try { u(); } catch (e) {} });
     Object.keys(S.sched).forEach(function (k) { clearTimeout(S.sched[k]); }); S.sched = {};
     S.tracked = {}; S.remote = {}; S.settingsRemote = null; S.pushed = {}; S.ready = false; S.pending = 0; S.defer = {};
-    S.scoped = false; S.sawMine = false; S.legacy = new Map(); S.where = {}; S.seenIn = {}; S.legacyBy = {}; S.xs = [];
+    S.presOn = false; S.scoped = false; S.sawMine = false; S.legacy = new Map(); S.where = {}; S.seenIn = {}; S.legacyBy = {}; S.xs = [];
   }
   function wipeLocal() {
     Object.keys(COLS).forEach(function (k) { RAW_SET.call(localStorage, k, '[]'); });
