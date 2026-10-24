@@ -213,6 +213,14 @@
     where: {}, seenIn: {}, legacyBy: {}, shErr: {}, xs: [], xwarned: false
   };
 
+  // Id haru number nabhaye / uid ma ajib akshar bhaye (inline onclick / attribute ma halda XSS hune) tyo doc skip garincha
+  var NUMID = { tp_tasks: 'id', tp_submissions: 'subId', tp_deposits: 'depositId', tp_withdrawals: 'withdrawId' };
+  function okDoc(k, d) {
+    var f = NUMID[k];
+    if (f && !(typeof d[f] === 'number' && isFinite(d[f]))) return false;
+    if (k === 'tp_users' && d.uid != null && !/^[A-Za-z0-9_-]{1,60}$/.test(String(d.uid))) return false;
+    return true;
+  }
   // Realtime Database key ma  . $ # [ ] /  hudaina
   function idStr(v) { return String(v).replace(/[.$#\[\]\/]/g, '_'); }
   function canon(v) {
@@ -310,6 +318,43 @@
   if (typeof document !== 'undefined') { if (document.body) mountBadge(); else document.addEventListener('DOMContentLoaded', mountBadge); }
   try { window.addEventListener('offline', function () { setLive(false); }); } catch (e) {}
   try { db.ref('.info/connected').on('value', function (s) { setLive(s.val() === true); }); } catch (e) {}
+
+  // ---------- SERVER TIME (Firebase ko ghadi) ----------
+  // Phone/computer ko date-time change garera daily bonus / spin dobar line milena: "aaja" ko din Firebase server ko samay bata nikalincha.
+  // Samay ek choti server bata liyera performance.now() (ghadi badlida nabigrine) le chalaincha. Din Nepal samay (UTC+5:45) ma sabai user ko eutai.
+  var NPT_MS = 20700000;
+  var DN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var TM = { off: null, conn: false, ok: false, base: 0, perf: 0, lastDay: null };
+  function pnow() { return (window.performance && typeof performance.now === 'function') ? performance.now() : null; }
+  // Date.toDateString() jastai format ("Sat Oct 24 2026") => purano saved lastSpin / lastCheckIn sanga milcha
+  function dayStr(ms) { var d = new Date(ms + NPT_MS); return DN[d.getUTCDay()] + ' ' + MN[d.getUTCMonth()] + ' ' + ('0' + d.getUTCDate()).slice(-2) + ' ' + d.getUTCFullYear(); }
+  function serverNow() { if (!TM.ok) return null; var p = pnow(); return p == null ? Date.now() + TM.off : TM.base + (p - TM.perf); }
+  function serverToday() { var n = serverNow(); return n == null ? null : dayStr(n); }
+  function serverYesterday() { var n = serverNow(); return n == null ? null : dayStr(n - 864e5); }
+  function tmChanged() { try { if (typeof window.tpTimeChanged === 'function') window.tpTimeChanged(); } catch (e) { console.error(e); } }
+  function tmUpdate() {
+    if (!TM.conn || typeof TM.off !== 'number') return;      // server sanga connect bhayeko bela matra bharosa garne
+    TM.base = Date.now() + TM.off; var p = pnow(); TM.perf = p == null ? 0 : p;
+    var first = !TM.ok; TM.ok = true;
+    if (first) { TM.lastDay = serverToday(); tmChanged(); }
+  }
+  try { db.ref('.info/serverTimeOffset').on('value', function (s) { var v = s.val(); if (typeof v === 'number') { TM.off = v; tmUpdate(); } }); } catch (e) {}
+  try { db.ref('.info/connected').on('value', function (s) { TM.conn = s.val() === true; tmUpdate(); }); } catch (e) {}
+  setInterval(function () {   // page khulai rahyo ra rati 12 bajyo bhane button feri tayar
+    var t = serverToday(); if (!t) return;
+    if (TM.lastDay !== t) { TM.lastDay = t; tmChanged(); }
+  }, 15000);
+  // Daily claim ko LOCK: Firebase server ma atomic transaction. Arko tab/device ya purano local copy bata dobar claim hudaina.
+  // field: 'lastSpin' | 'lastCheckIn'.  ok=false bhane aaja pahile nai claim bhaisakyo.
+  async function dailyLock(field, today, uid) {
+    if (!today || (field !== 'lastSpin' && field !== 'lastCheckIn') || !uid) throw new Error('bad daily lock');
+    var id = idStr(uid), ref = dbOf('tp_users', id).ref('app_users').child(id).child(field), prev = null;
+    var r = await Promise.race([
+      ref.transaction(function (cur) { prev = cur; if (cur === today) return; return today; }, undefined, false),
+      new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 15000); })
+    ]);
+    return { ok: !!(r && r.committed), prev: prev };
+  }
 
   // ---------- readiness ----------
   function srcDone() {
@@ -484,6 +529,7 @@
     }
     function put(snap, isAdd) {
       var d = dec(snap.val()); if (!d || typeof d !== 'object') return;
+      if (!okDoc(lsKey, d)) return;   // galat id (script/quote halera XSS garne koshish) bhayeko doc ignore
       var id = snap.key, had = m.has(id);
       m.set(id, d); if (S.shErr[sh]) delete S.shErr[sh]; S.where[lsKey + '|' + id] = sh; (S.seenIn[lsKey + '|' + id] = S.seenIn[lsKey + '|' + id] || {})[sh] = 1;
       if (first) return;
@@ -808,6 +854,9 @@
     isAdminEmail: isAdminEmail, REQUIRE_VERIFIED: REQUIRE_VERIFIED, SV: SV, idStr: idStr,
     normEmail: normEmail, waitLoaded: waitLoaded, claimEmail: claimEmail, ensureProfile: ensureProfile,
     whenReady: whenReady,
+    serverNow: serverNow, today: serverToday, yesterday: serverYesterday, dayStr: dayStr,
+    timeReady: function () { return TM.ok; }, connected: function () { return TM.conn === true; },
+    dailyLock: dailyLock,
     state: S,
     myProfile: myProfile,
     purgeDeletedAccountNow: purgeDeletedAccountNow,
@@ -2134,12 +2183,17 @@
 
         function getSettings() { return JSON.parse(localStorage.getItem('tp_settings')); }
 
-        function todayStr() { return new Date().toDateString(); }
-        function yesterdayStr() {
-            const d = new Date();
-            d.setDate(d.getDate() - 1);
-            return d.toDateString();
-        }
+        // Din Firebase SERVER ko samay bata (device ko date/time change garera chalaina). Samay aaisakeko chaina bhane kunai pani saved date sanga nmilne value.
+        function todayStr() { return (window.TPSync && TPSync.today && TPSync.today()) || '__no_server_time__'; }
+        function yesterdayStr() { return (window.TPSync && TPSync.yesterday && TPSync.yesterday()) || '__no_server_time__'; }
+        function tpServerTimeOK() { return !!(window.TPSync && TPSync.timeReady && TPSync.timeReady() && TPSync.connected && TPSync.connected()); }
+        // server samay aayo / din badliyo => buttons feri bane
+        window.tpTimeChanged = function () {
+            try {
+                const u = freshActive();
+                if (u && document.getElementById('daily-bonus-btn')) { renderDailyBonusBtn(u); renderSpinBtn(u); }
+            } catch (e) {}
+        };
 
         function switchView(view) {
             const landingView = document.getElementById('landing-view');
@@ -2171,7 +2225,7 @@
         function renderTicker() {
             const subs = JSON.parse(localStorage.getItem('tp_submissions')).filter(s => s.status === 'Approved').slice(-10).reverse();
             const track = document.getElementById('ticker-track');
-            let items = subs.map(s => `<i class="fa-solid fa-circle-check text-emerald-400 mr-1.5"></i>${s.userName} just earned Rs. ${(s.netReward != null ? s.netReward : s.reward)} from "${s.taskTitle}"`);
+            let items = subs.map(s => `<i class="fa-solid fa-circle-check text-emerald-400 mr-1.5"></i>${esc(s.userName)} just earned Rs. ${(s.netReward != null ? s.netReward : s.reward)} from "${esc(s.taskTitle)}"`);
 
             if (items.length === 0) {
                 items = [
@@ -2299,7 +2353,7 @@
                 const text = r.referralBlocked ? 'Not eligible (duplicate / same device)' : (r.firstApprovalRewarded ? 'Bonus Paid' : 'Waiting for first task');
                 tbody.innerHTML += `
                     <tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition">
-                        <td class="p-4 font-semibold text-white">${r.name}</td>
+                        <td class="p-4 font-semibold text-white">${esc(r.name)}</td>
                         <td class="p-4 text-xs text-slate-400">${new Date(r.joinedAt).toLocaleDateString()}</td>
                         <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold ${badge}">${text}</span></td>
                     </tr>
@@ -2322,32 +2376,56 @@
             }
         }
 
-        function claimDailyBonus() {
+        async function claimDailyBonus() {
+            if (window.__dailyBonusBusy) return;
             let user = freshActive();
             if (!user) return;
-            if (user.lastCheckIn === todayStr()) {
+            if (!tpServerTimeOK()) {
+                showToast('Server ko samay load hudai cha ya internet chaina. Alikati pachi feri try garnus.');
+                return;
+            }
+            const today = todayStr(), yest = yesterdayStr();
+            if (user.lastCheckIn === today) {
                 showToast('Aajako bonus pahile nai claim gareko cha!');
                 return;
             }
 
-            const settings = getSettings();
-            user.checkInStreak = (user.lastCheckIn === yesterdayStr()) ? (user.checkInStreak || 0) + 1 : 1;
+            window.__dailyBonusBusy = true;
+            try {
+                // Server ma atomic lock: aaja pahile claim bhayeko chha bhane yaha rokincha (arko device / purano copy bata pani)
+                const lk = await TPSync.dailyLock('lastCheckIn', today, user.uid);
+                user = freshActive() || user;
+                if (!lk.ok) {
+                    showToast('Aajako bonus pahile nai claim gareko cha!');
+                    user.lastCheckIn = today;
+                    renderDailyBonusBtn(user);
+                    return;
+                }
 
-            // Daily bonus is fixed at Rs. 0.01 — hard-capped, never more.
-            const DAILY_BONUS_CAP = 0.01;
-            let bonus = Math.min(settings.dailyBonus || DAILY_BONUS_CAP, DAILY_BONUS_CAP);
+                const settings = getSettings();
+                user.checkInStreak = (lk.prev === yest) ? (user.checkInStreak || 0) + 1 : 1;
 
-            user.balance = (user.balance || 0) + bonus;
-            user.totalEarned = (user.totalEarned || 0) + bonus;
-            user.lastCheckIn = todayStr();
+                // Daily bonus is fixed at Rs. 0.01 — hard-capped, never more.
+                const DAILY_BONUS_CAP = 0.01;
+                let bonus = Math.min(settings.dailyBonus || DAILY_BONUS_CAP, DAILY_BONUS_CAP);
 
-            refreshActiveUserEverywhere(user);
-            document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
-            renderRankBadge(user);
-            renderStreak(user);
-            renderWithdrawProgress(user);
-            renderDailyBonusBtn(user);
-            showToast(`Daily bonus claimed: Rs. ${bonus.toFixed(2)}! 🔥 Streak: ${user.checkInStreak} days`);
+                user.balance = (user.balance || 0) + bonus;
+                user.totalEarned = (user.totalEarned || 0) + bonus;
+                user.lastCheckIn = today;
+
+                refreshActiveUserEverywhere(user);
+                document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
+                renderRankBadge(user);
+                renderStreak(user);
+                renderWithdrawProgress(user);
+                renderDailyBonusBtn(user);
+                showToast(`Daily bonus claimed: Rs. ${bonus.toFixed(2)}! 🔥 Streak: ${user.checkInStreak} days`);
+            } catch (e) {
+                console.warn('daily bonus', e);
+                showToast('Daily bonus claim bhayena (internet / server samasya). Feri try garnus.');
+            } finally {
+                window.__dailyBonusBusy = false;
+            }
         }
 
         // ---------- SPIN WHEEL ----------
@@ -2366,12 +2444,18 @@
         }
 
         function spinNow() {
+            if (window.__spinBusy) return;
             let user = freshActive();
             if (!user) return;
+            if (!tpServerTimeOK()) {
+                showToast('Server ko samay load hudai cha ya internet chaina. Alikati pachi feri try garnus.');
+                return;
+            }
             if (user.lastSpin === todayStr()) {
                 showToast('Aajako spin pahile nai use gareko cha!');
                 return;
             }
+            window.__spinBusy = true;
 
             const disc = document.getElementById('wheel-disc');
             // Reward is always between Rs. 0.01 (min) and Rs. 0.05 (max) — never more.
@@ -2388,22 +2472,40 @@
 
             document.getElementById('spin-btn').disabled = true;
 
-            setTimeout(() => {
-                user.lastSpin = todayStr();
-                if (reward > 0) {
-                    user.balance = (user.balance || 0) + reward;
-                    user.totalEarned = (user.totalEarned || 0) + reward;
-                }
-                refreshActiveUserEverywhere(user);
-                document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
-                renderRankBadge(user);
-                renderWithdrawProgress(user);
-                renderSpinBtn(user);
+            setTimeout(async () => {
+                try {
+                    // Server ma atomic lock: aaja pahile spin bhayeko chha bhane reward dinchaina
+                    const today = todayStr();
+                    const lk = await TPSync.dailyLock('lastSpin', today, user.uid);
+                    user = freshActive() || user;
+                    if (!lk.ok) {
+                        showToast('Aajako spin pahile nai use gareko cha!');
+                        user.lastSpin = today;
+                        renderSpinBtn(user);
+                        return;
+                    }
+                    user.lastSpin = today;
+                    if (reward > 0) {
+                        user.balance = (user.balance || 0) + reward;
+                        user.totalEarned = (user.totalEarned || 0) + reward;
+                    }
+                    refreshActiveUserEverywhere(user);
+                    document.getElementById('user-display-balance').innerText = user.balance.toFixed(2);
+                    renderRankBadge(user);
+                    renderWithdrawProgress(user);
+                    renderSpinBtn(user);
 
-                document.getElementById('spin-result-icon').innerText = reward > 0 ? '🎉' : '😅';
-                document.getElementById('spin-result-title').innerText = reward > 0 ? `You Won Rs. ${reward}!` : 'Better Luck Tomorrow';
-                document.getElementById('spin-result-desc').innerText = reward > 0 ? 'Bonus tapaiko balance ma thapiyo.' : 'Bholi feri spin garnus, aaja kehi paunubhayen.';
-                document.getElementById('spin-result-modal').classList.remove('hidden');
+                    document.getElementById('spin-result-icon').innerText = reward > 0 ? '🎉' : '😅';
+                    document.getElementById('spin-result-title').innerText = reward > 0 ? `You Won Rs. ${reward}!` : 'Better Luck Tomorrow';
+                    document.getElementById('spin-result-desc').innerText = reward > 0 ? 'Bonus tapaiko balance ma thapiyo.' : 'Bholi feri spin garnus, aaja kehi paunubhayen.';
+                    document.getElementById('spin-result-modal').classList.remove('hidden');
+                } catch (e) {
+                    console.warn('spin', e);
+                    showToast('Spin save bhayena (internet / server samasya). Feri try garnus.');
+                    try { renderSpinBtn(freshActive() || user); } catch (e2) {}
+                } finally {
+                    window.__spinBusy = false;
+                }
             }, 3200);
         }
 
@@ -2814,7 +2916,7 @@ function applySubmissionReview(subId, newStatus, remark, reviewer, reviewerUid) 
         if (isUserTask && !task) return { ok: false, msg: 'Task delete bhaisakeko cha — approve garna mildaina, reject garnus.' };
     }
     const who = reviewer === 'poster' ? 'Task Owner' : 'Admin';
-    const reward = round2(sub.reward);
+    const reward = round2(task && task.reward != null ? task.reward : sub.reward);   // task ko reward nai pramaan (worker le submission ma lekhne number hoina)
     const taxAmt = round2(reward * TASK_TAX_PCT / 100);
     const netAmt = round2(reward - taxAmt);
     let refBonus = null, posterRefund = 0;
@@ -3361,7 +3463,7 @@ function closeTaskAndRefund(taskId, by) {
             const M = [
                 ['Daily bonus claim garnus', user.lastCheckIn === today, 'claimDailyBonus()', 'fa-gift'],
                 ['Daily spin ghumaunus', user.lastSpin === today, 'spinNow()', 'fa-dharmachakra'],
-                ['Aaja 1 task submit garnus', subs.some(x => new Date(x.subId).toDateString() === today), "switchUserTab('tasks')", 'fa-list-check'],
+                ['Aaja 1 task submit garnus', subs.some(x => (window.TPSync && TPSync.dayStr ? TPSync.dayStr(Number(x.subId)) : new Date(x.subId).toDateString()) === today), "switchUserTab('tasks')", 'fa-list-check'],
                 ['1 jana sathi invite garnus', (user.referralCount || 0) > 0, 'copyReferralLink()', 'fa-user-plus']
             ];
             document.getElementById('mission-count').innerText = M.filter(m => m[1]).length + '/' + M.length;
@@ -3487,7 +3589,7 @@ function closeTaskAndRefund(taskId, by) {
                 tbody.innerHTML += `
                     <tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition">
                         <td class="p-4 font-black text-lg">${medals[i] || (i + 1)}</td>
-                        <td class="p-4 font-semibold text-white">${u.name} <span class="text-xs text-slate-500 font-mono block">${u.uid}</span></td>
+                        <td class="p-4 font-semibold text-white">${esc(u.name)} <span class="text-xs text-slate-500 font-mono block">${esc(u.uid)}</span></td>
                         <td class="p-4"><span class="text-xs px-3 py-1 rounded-full font-bold border ${rank.cls}"><i class="fa-solid ${rank.icon} mr-1"></i>${rank.label}</span></td>
                         <td class="p-4 font-bold text-emerald-400">Rs. ${(u.totalEarned || 0).toFixed(2)}</td>
                     </tr>
