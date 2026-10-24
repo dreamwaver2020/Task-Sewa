@@ -67,6 +67,14 @@
     SH[s.id] = { id: s.id, app: ap, auth: ap.auth(), db: ap.database() };
   });
   var ACT = SHARD_IDS[0];
+  // FIX: logout garda auth pahile null huncha ra presence remove() 'permission denied' huncha => admin ma online ramro rahancha.
+  // Aba kunai pani signOut() agadi presence pahile hatauchha.
+  SHARD_IDS.forEach(function (id) {
+    var a = SH[id].auth, orig = a.signOut.bind(a);
+    a.signOut = function () {
+      return (PAGE === 'admin' ? Promise.resolve() : presenceOff()).then(function () { return orig(); });
+    };
+  });
   if (PAGE !== 'admin') { var sv0 = RAW_GET.call(localStorage, 'tp_shard'); if (sv0 && SH[sv0]) ACT = sv0; }
   function setActive(id) { if (!SH[id]) return; ACT = id; if (PAGE !== 'admin') { try { RAW_SET.call(localStorage, 'tp_shard', id); } catch (e) {} } }
   function pickShard() {
@@ -589,17 +597,41 @@
     return found;
   }
   // Online presence: admin panel ma "Online Users" dekhauna. Tab/browser band huda afai hatincha (onDisconnect).
+  var PRES = null;
+  function presenceOff() {
+    var p = PRES; if (!p) return Promise.resolve();
+    PRES = null; p.dead = true;
+    try { clearInterval(p.hb); } catch (e) {}
+    try { p.ci.off('value', p.h); } catch (e) {}
+    document.removeEventListener('visibilitychange', p.onVis);
+    window.removeEventListener('pagehide', p.onHide); window.removeEventListener('beforeunload', p.onHide);
+    var done = Promise.resolve();
+    try { p.ref.onDisconnect().cancel(); } catch (e) {}
+    try { done = p.ref.remove(); } catch (e) {}
+    return Promise.race([Promise.resolve(done).catch(function (e) { console.warn('presence remove', (e && e.code) || e); }), new Promise(function (r) { setTimeout(r, 3000); })]);
+  }
   function startPresence(me) {
     if (PAGE !== 'user' || S.presOn || !S.fuid) return;
     S.presOn = true;
-    var ref = db.ref('presence/' + idStr(S.fuid)), ci = db.ref('.info/connected');
-    var h = ci.on('value', function (snap) {
-      if (snap.val() !== true) return;
+    var fuid = S.fuid, ref = db.ref('presence/' + idStr(fuid)), ci = db.ref('.info/connected');
+    var P = PRES = { ref: ref, ci: ci, dead: false };
+    function ok() { return !P.dead && PRES === P && S.fuid === fuid; }
+    function val() { return { online: true, name: String(me.name || '').slice(0, 99), uid: String(me.uid || '').slice(0, 39), ts: SV.TIMESTAMP }; }
+    function mark() {
+      if (!ok()) return;
       ref.onDisconnect().remove().then(function () {
-        return ref.set({ online: true, name: String(me.name || '').slice(0, 99), uid: String(me.uid || '').slice(0, 39), ts: SV.TIMESTAMP });
+        if (!ok()) { try { ref.onDisconnect().cancel(); } catch (e) {} return; }
+        return ref.set(val());
       }).catch(function (e) { console.warn('presence', (e && e.code) || e); });
-    });
-    S.unsubs.push(function () { try { ci.off('value', h); ref.remove(); } catch (e) {} });
+    }
+    P.h = ci.on('value', function (snap) { if (snap.val() === true && !document.hidden) mark(); });
+    P.onVis = function () { if (document.hidden) { try { ref.remove(); } catch (e) {} } else mark(); };
+    P.onHide = function () { try { ref.remove(); } catch (e) {} };
+    document.addEventListener('visibilitychange', P.onVis);
+    window.addEventListener('pagehide', P.onHide);
+    window.addEventListener('beforeunload', P.onHide);
+    P.hb = setInterval(function () { if (ok() && !document.hidden) { try { ref.set(val()).catch(function () {}); } catch (e) {} } }, 30000);
+    S.unsubs.push(function () { presenceOff(); });
   }
   function checkMine() {
     if (PAGE !== 'user' || !S.fuid) return;
@@ -644,6 +676,7 @@
     if (S.removed || PAGE !== 'user') return;
     S.removed = true;
     S.delPromise = (async function () {
+      try { await presenceOff(); } catch (e) {}
       try { if (auth.currentUser) await auth.currentUser.delete(); } catch (e) { console.warn('auth delete', e.code || e); }
       try { await auth.signOut(); } catch (e) {}
     })();
@@ -651,6 +684,7 @@
   }
   async function purgeDeletedAccountNow() {          // used by login flow
     S.removed = true;
+    try { await presenceOff(); } catch (e) {}
     try { if (auth.currentUser) await auth.currentUser.delete(); } catch (e) { console.warn('auth delete', e.code || e); }
     try { await auth.signOut(); } catch (e) {}
   }
