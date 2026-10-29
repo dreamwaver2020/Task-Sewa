@@ -2353,8 +2353,7 @@
 
         // ---------- REFERRALS ----------
         function renderReferralCard(user) {
-            const link = window.location.origin + window.location.pathname + '?ref=' + user.uid;
-            document.getElementById('referral-link-input').value = link;
+            document.getElementById('referral-link-input').value = APP_DOWNLOAD_URL;   // yo box ma Google Drive app download link
             const _mine = tpGet('tp_users', []).filter(u => u && u.referredBy === user.uid);
             document.getElementById('referral-count-stat').innerText = Math.max(user.referralCount || 0, _mine.length);
             const _pe = document.getElementById('referral-pending-stat');
@@ -2364,15 +2363,17 @@
             document.getElementById('referral-bonus-inline').innerText = 'Rs. ' + (getSettings().referralBonus || 0);
         }
 
-        function copyReferralLink() {
+        const APP_DOWNLOAD_URL = 'https://drive.google.com/file/d/1wcXAFp_-H8yDhZd-z0KGZnzK4tmcg_-o/view?usp=sharing';
+
+        function copyReferralLink() {   // app download link copy garcha
             const input = document.getElementById('referral-link-input');
             input.select();
             input.setSelectionRange(0, 99999);
             navigator.clipboard && navigator.clipboard.writeText(input.value).then(() => {
-                showToast('Referral link copied!');
+                showToast('App download link copied!');
             }).catch(() => {
                 document.execCommand('copy');
-                showToast('Referral link copied!');
+                showToast('App download link copied!');
             });
         }
 
@@ -3470,8 +3471,8 @@ function closeTaskAndRefund(taskId, by) {
         }
         function shareReferral(kind) {
             const au = freshActive(); if (!au) return;
-            const link = document.getElementById('referral-link-input').value;
-            const msg = 'Mero TaskSewa ma task garera paisa kamaun! Mero referral code ' + au.uid + ' halera join garnus: ' + link;
+            const link = APP_DOWNLOAD_URL;
+            const msg = 'Mero TaskSewa ma task garera paisa kamaun! App download garnus: ' + link + '\nSignup garda mero referral code halnus: ' + au.uid;
             if (kind === 'wa') window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank', 'noopener,noreferrer');
             else if (kind === 'fb') window.open('https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(link), '_blank', 'noopener,noreferrer');
             else if (navigator.share) navigator.share({ title: 'Mero TaskSewa', text: msg, url: link }).catch(() => {});
@@ -4036,9 +4037,29 @@ function tpNormRef(v) {   // "uid-1234567" / "1234567" / " UID-1234567 " => "UID
     try {
         const q = new URLSearchParams(location.search), r = tpNormRef(q.get('ref') || q.get('r') || q.get('code'));
         if (r) { localStorage.setItem('tp_pendingRef', r); try { sessionStorage.setItem('tp_pendingRef', r); } catch (e) {} }
+        if (r && !window.__tpIsApp) {   // referral link bata aayeko: app download banner (code clipboard ma copy hunchha)
+            window.addEventListener('DOMContentLoaded', function () {
+                var b = document.createElement('div');
+                b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#4f46e5;color:#fff;padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;font:600 13px system-ui,sans-serif;box-shadow:0 -4px 20px rgba(0,0,0,.35)';
+                b.innerHTML = '<span>📲 TaskSewa App download garnus<br><small style="font-weight:500;opacity:.85">Referral code: ' + r + ' (auto copy hunchha)</small></span>' +
+                    '<button id="tp-dl-btn" style="background:#fff;color:#4f46e5;border:0;border-radius:10px;padding:9px 14px;font-weight:800;cursor:pointer">Download</button>';
+                document.body.appendChild(b);
+                document.getElementById('tp-dl-btn').onclick = function () {
+                    try { navigator.clipboard.writeText(r); } catch (e) {}
+                    window.open('https://drive.google.com/file/d/1wcXAFp_-H8yDhZd-z0KGZnzK4tmcg_-o/view?usp=sharing', '_blank');
+                };
+            });
+        }
         setTimeout(function () {   // signup form ma code auto-bharne + "invited by" dekhaune
             const r2 = tpNormRef(localStorage.getItem('tp_pendingRef')), i = document.getElementById('reg-refcode'), n = document.getElementById('reg-refnote');
             if (i && r2 && !i.value) i.value = r2;
+            if (i && !i.__clipHook) {   // app install pachi: field tap garda clipboard ma UID code bhaye auto-halne
+                i.__clipHook = 1;
+                i.addEventListener('focus', function () {
+                    if (i.value || !navigator.clipboard || !navigator.clipboard.readText) return;
+                    navigator.clipboard.readText().then(function (t) { var c = tpNormRef(t); if (c && !i.value) i.value = c; }).catch(function () {});
+                });
+            }
             if (n && r2) { n.textContent = '🎉 ' + r2 + ' le tapailai invite garnuhuncha'; n.classList.remove('hidden'); }
         }, 0);
     } catch (e) {}
